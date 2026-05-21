@@ -1,10 +1,13 @@
 <script lang="ts">
 	import type { PageData } from './$types';
+	import { page } from '$app/state';
 	import { getBrowserSupabase } from '$lib/supabase/client';
 	import { untrack } from 'svelte';
 	import { DEFAULT_SETTINGS, DISEASE_KEYS, DISEASE_THEMES, type DiseaseTheme } from '$lib/game/constants';
+	import { formatEvent, formatFinishReason } from '$lib/game/events';
 	import type {
 		GameRow,
+		PlayerRow,
 		DiseaseRow,
 		GameCityRow,
 		EventLogRow,
@@ -12,6 +15,7 @@
 	} from '$lib/supabase/types';
 	import MapCanvas from '$lib/components/game/MapCanvas.svelte';
 	import PhaseTimer from '$lib/components/game/PhaseTimer.svelte';
+	import BrandMark from '$lib/components/game/BrandMark.svelte';
 
 	let { data }: { data: PageData } = $props();
 
@@ -20,7 +24,10 @@
 	let game = $state<GameRow>(initial.game);
 	let diseases = $state<DiseaseRow[]>(initial.diseases);
 	let cities = $state<GameCityRow[]>(initial.cities);
+	let players = $state<PlayerRow[]>(initial.players);
 	let events = $state<EventLogRow[]>([]);
+
+	const code = $derived((page.params.code ?? '').toUpperCase());
 
 	const settings = $derived(
 		(game.settings as Partial<typeof DEFAULT_SETTINGS> | null) ?? DEFAULT_SETTINGS
@@ -32,6 +39,22 @@
 	});
 
 	const diseaseLabels = $derived(DISEASE_THEMES[theme]);
+
+	const cityNameByKey = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const c of cities) m.set(c.map_city_key, c.name);
+		return m;
+	});
+	const playerNameById = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const pl of players) m.set(pl.id, pl.display_name);
+		return m;
+	});
+	const eventCtx = $derived({
+		theme,
+		cityName: (key: string) => cityNameByKey.get(key),
+		playerName: (id: string) => playerNameById.get(id)
+	});
 
 	const pandemicLoseAt = $derived(settings.pandemic_lose_at ?? 8);
 	const totalRounds = $derived(settings.round_count ?? 12);
@@ -45,6 +68,10 @@
 		return out;
 	});
 
+	const won = $derived(
+		game.status === 'finished' && diseases.length > 0 && diseases.every((d) => d.cured)
+	);
+
 	function diseaseBg(key: DiseaseKey) {
 		return `bg-${key}`;
 	}
@@ -55,6 +82,12 @@
 		const mm = d.getMinutes().toString().padStart(2, '0');
 		const ss = d.getSeconds().toString().padStart(2, '0');
 		return `${hh}:${mm}:${ss}`;
+	}
+
+	function openEventsWindow() {
+		const url = `/board/${code}/events`;
+		const features = 'noopener,noreferrer,width=1200,height=800';
+		window.open(url, `pandemic-events-${code}`, features);
 	}
 
 	$effect(() => {
@@ -80,6 +113,14 @@
 				.eq('game_id', gameId);
 			if (rows) cities = rows;
 		}
+		async function refetchPlayers() {
+			const { data: rows } = await supabase
+				.from('players')
+				.select('*')
+				.eq('game_id', gameId)
+				.order('slot_index');
+			if (rows) players = rows;
+		}
 
 		const channel = supabase
 			.channel('board:' + gameId)
@@ -102,6 +143,13 @@
 				{ event: '*', schema: 'public', table: 'diseases', filter: `game_id=eq.${gameId}` },
 				() => {
 					refetchDiseases();
+				}
+			)
+			.on(
+				'postgres_changes',
+				{ event: '*', schema: 'public', table: 'players', filter: `game_id=eq.${gameId}` },
+				() => {
+					refetchPlayers();
 				}
 			)
 			.on(
@@ -150,13 +198,16 @@
 	<header
 		class="flex h-16 shrink-0 items-center justify-between gap-6 border-b border-border/50 bg-background/80 px-6 backdrop-blur"
 	>
-		<div class="flex min-w-0 flex-col">
-			<span class="truncate text-base font-semibold tracking-tight">
-				{game.name ?? 'Krizový štáb'}
-			</span>
-			<span class="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
-				{game.code}
-			</span>
+		<div class="flex min-w-0 items-center gap-3">
+			<BrandMark size={40} class="rounded-md" />
+			<div class="flex min-w-0 flex-col">
+				<span class="truncate text-base font-semibold tracking-tight">
+					{game.name ?? 'Krizový štáb'}
+				</span>
+				<span class="font-mono text-xs uppercase tracking-[0.3em] text-muted-foreground">
+					{game.code}
+				</span>
+			</div>
 		</div>
 		<span class="text-center text-sm uppercase tracking-[0.4em] text-muted-foreground">
 			PANDEMIC · <span class="text-rubra">Krizový štáb</span>
@@ -266,27 +317,57 @@
 		</aside>
 	</main>
 
-	<!-- Footer ticker -->
-	<footer
-		class="flex h-16 shrink-0 items-center gap-6 overflow-hidden border-t border-border/50 bg-background/80 px-6 font-mono text-xs backdrop-blur"
+	{#if game.status === 'finished'}
+		<div
+			class="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+			role="status"
+			aria-live="polite"
+		>
+			<div
+				class={[
+					'flex flex-col items-center gap-4 rounded-2xl border-2 px-12 py-10 text-center shadow-2xl',
+					won
+						? 'border-viridis/60 bg-viridis/10 text-viridis'
+						: 'border-destructive/60 bg-destructive/10 text-destructive'
+				].join(' ')}
+			>
+				<span class="text-sm uppercase tracking-[0.4em] opacity-80">
+					{won ? 'Vítězství' : 'Konec hry'}
+				</span>
+				<h2 class="text-6xl font-semibold tracking-tight">
+					{won ? 'KRIZE ZAŽEHNÁNA' : 'PANDEMIE ZVÍTĚZILA'}
+				</h2>
+				<p class="max-w-xl text-base text-foreground/80">
+					{formatFinishReason(game.finish_reason)}
+				</p>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Footer ticker — click to open a dedicated events window for a second projector -->
+	<button
+		type="button"
+		onclick={openEventsWindow}
+		title="Otevřít okno událostí pro druhý projektor"
+		aria-label="Otevřít okno událostí pro druhý projektor"
+		class="group flex h-16 shrink-0 cursor-pointer items-center gap-6 overflow-hidden border-t border-border/50 bg-background/80 px-6 text-left font-mono text-xs backdrop-blur transition-colors hover:bg-background/95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 	>
-		<span class="shrink-0 uppercase tracking-[0.3em] text-muted-foreground">Události</span>
+		<span class="shrink-0 uppercase tracking-[0.3em] text-muted-foreground group-hover:text-foreground">
+			Události →
+		</span>
 		<div class="flex min-w-0 flex-1 items-center gap-6 overflow-hidden">
 			{#if events.length === 0}
 				<span class="text-muted-foreground/70">
-					Zatím žádné události. Sleduj mapu.
+					Zatím žádné události. Klikni pro samostatné okno.
 				</span>
 			{:else}
 				{#each events as ev (ev.id)}
 					<span class="flex shrink-0 items-center gap-2 whitespace-nowrap">
 						<span class="text-muted-foreground">{formatTime(ev.at)}</span>
-						<span class="rounded bg-muted/60 px-1.5 py-0.5 uppercase tracking-wider text-foreground">
-							{ev.kind}
-						</span>
-						<span class="text-muted-foreground">{JSON.stringify(ev.payload)}</span>
+						<span class="text-foreground/90">{formatEvent(ev.kind, ev.payload, eventCtx)}</span>
 					</span>
 				{/each}
 			{/if}
 		</div>
-	</footer>
+	</button>
 </div>

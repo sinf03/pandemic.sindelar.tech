@@ -14,6 +14,7 @@
 		ROLE_LABELS,
 		type DiseaseTheme
 	} from '$lib/game/constants';
+	import { formatFinishReason } from '$lib/game/events';
 	import type {
 		GameRow,
 		PlayerRow,
@@ -31,7 +32,8 @@
 	import RoleCard from '$lib/components/game/RoleCard.svelte';
 	import PhaseTimer from '$lib/components/game/PhaseTimer.svelte';
 	import InfectionRing from '$lib/components/game/InfectionRing.svelte';
-	import { LifeBuoy, Hourglass, AlertTriangle, FlaskConical } from 'lucide-svelte';
+	import BrandMark from '$lib/components/game/BrandMark.svelte';
+	import { LifeBuoy, Hourglass, AlertTriangle, FlaskConical, Trophy, Skull } from 'lucide-svelte';
 	import { untrack } from 'svelte';
 
 	type CrisisCardOption = { key: string; label: string };
@@ -111,6 +113,10 @@
 		if (!Array.isArray(raw)) return [];
 		return raw as CrisisCardOption[];
 	});
+
+	const won = $derived(
+		game.status === 'finished' && diseases.length > 0 && diseases.every((d) => d.cured)
+	);
 
 	function diseaseBadgeClass(key: DiseaseKey, stage: number) {
 		const colorMap: Record<DiseaseKey, string> = {
@@ -292,13 +298,16 @@
 		<header
 			class="sticky top-0 z-20 -mx-0 flex items-center justify-between gap-3 border-b border-border/40 bg-background/85 px-4 py-3 backdrop-blur"
 		>
-			<div class="flex flex-col">
-				<span class="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
-					Kolo {game.current_round || 0}
-				</span>
-				<span class="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
-					{code}
-				</span>
+			<div class="flex items-center gap-3">
+				<BrandMark size={32} class="rounded-sm" />
+				<div class="flex flex-col">
+					<span class="text-[10px] uppercase tracking-[0.22em] text-muted-foreground">
+						Kolo {game.current_round || 0}
+					</span>
+					<span class="font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
+						{code}
+					</span>
+				</div>
 			</div>
 			<PhaseTimer phase={game.current_phase} endsAt={game.phase_ends_at} />
 		</header>
@@ -318,10 +327,40 @@
 				</p>
 				<Button href="/" variant="outline">Zpět na úvod</Button>
 			</div>
+		{:else if game.status === 'finished'}
+			<section class="flex flex-1 flex-col items-center justify-center gap-6 px-6 text-center">
+				<div
+					class={[
+						'flex size-24 items-center justify-center rounded-full border',
+						won
+							? 'border-viridis/40 bg-viridis/15 text-viridis'
+							: 'border-destructive/40 bg-destructive/10 text-destructive'
+					].join(' ')}
+				>
+					{#if won}
+						<Trophy class="size-12" />
+					{:else}
+						<Skull class="size-12" />
+					{/if}
+				</div>
+				<div class="flex flex-col gap-2">
+					<span class="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+						{won ? 'Vítězství' : 'Konec hry'}
+					</span>
+					<h1 class="text-3xl font-semibold tracking-tight">
+						{won ? 'Krize zažehnána' : 'Pandemie zvítězila'}
+					</h1>
+					<p class="text-sm text-muted-foreground">
+						{formatFinishReason(game.finish_reason) || 'Hra skončila.'}
+					</p>
+				</div>
+				<Button href="/" variant="outline">Zpět na úvod</Button>
+			</section>
 		{:else if game.status === 'lobby'}
 			<section class="flex flex-1 flex-col gap-6 px-4 pt-4">
-				<div class="flex flex-col items-center gap-3 pt-8 text-center">
-					<Hourglass class="size-10 text-muted-foreground" />
+				<div class="flex flex-col items-center gap-3 pt-6 text-center">
+					<BrandMark size={120} class="drop-shadow-[0_18px_36px_rgba(220,38,38,0.22)]" />
+					<Hourglass class="size-6 text-muted-foreground" />
 					<h1 class="text-3xl font-semibold tracking-tight">Čekáme na vedoucího</h1>
 					<p class="max-w-xs text-sm text-muted-foreground">
 						{leaderPlayer

@@ -6,6 +6,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { getBrowserSupabase } from '$lib/supabase/client';
 	import { saveSession } from '$lib/session';
+	import BrandMark from '$lib/components/game/BrandMark.svelte';
 	import { ArrowRight } from 'lucide-svelte';
 
 	let code = $state((page.url.searchParams.get('code') ?? '').toUpperCase().slice(0, 6));
@@ -49,27 +50,27 @@
 
 			const result = data as {
 				game_id: string;
-				game_code: string;
+				code: string;
 				player_id: string;
 				device_token: string;
-				display_name: string;
+				slot_index: number;
 			} | null;
 
-			if (!result) {
+			if (!result || !result.code) {
 				errorMessage = 'Server nevrátil žádná data.';
 				return;
 			}
 
 			saveSession({
 				game_id: result.game_id,
-				game_code: result.game_code,
+				game_code: result.code,
 				player_id: result.player_id,
 				device_token: result.device_token,
-				display_name: result.display_name,
+				display_name: trimmedName,
 				is_admin: false
 			});
 
-			await goto(`/play/${result.game_code}`);
+			await goto(`/play/${result.code}`);
 		} catch (e) {
 			errorMessage = e instanceof Error ? e.message : 'Něco se pokazilo.';
 		} finally {
@@ -84,7 +85,10 @@
 	></div>
 
 	<div class="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-6 py-12">
-		<header class="mb-8 flex flex-col gap-3">
+		<header class="mb-8 flex flex-col gap-4">
+			<a href="/" aria-label="Domů" class="-ml-2 inline-flex w-fit p-2">
+				<BrandMark size={56} />
+			</a>
 			<span class="text-xs uppercase tracking-[0.2em] text-muted-foreground">
 				Krok 1 z 1
 			</span>
@@ -104,10 +108,9 @@
 					autocapitalize="characters"
 					inputmode="text"
 					spellcheck={false}
-					pattern="[A-Z0-9]{6}"
 					maxlength={6}
 					required
-					value={code}
+					bind:value={code}
 					oninput={onCodeInput}
 					placeholder="ABC123"
 					class="h-14 text-center font-mono text-2xl tracking-widest uppercase"

@@ -60,3 +60,30 @@ export const gameApi = {
 	logEvent: (code: string, kind: string, payload: Record<string, unknown> = {}) =>
 		call(code, 'event', { kind, payload })
 };
+
+/**
+ * Recover a player session on a fresh device using only a device_token.
+ * Doesn't go through `call()` because there's no local session yet.
+ */
+export async function whoami(
+	code: string,
+	deviceToken: string
+): Promise<{
+	game_id: string;
+	game_code: string;
+	player_id: string;
+	device_token: string;
+	display_name: string;
+	is_admin: boolean;
+}> {
+	const res = await fetch(`/api/games/${code.toUpperCase()}/whoami`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ device_token: deviceToken })
+	});
+	if (!res.ok) {
+		const text = await res.text();
+		throw new GameApiError(text || `HTTP ${res.status}`, res.status);
+	}
+	return res.json();
+}

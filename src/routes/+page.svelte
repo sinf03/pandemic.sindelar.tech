@@ -1,12 +1,14 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { LogIn, Plus, ArrowRight } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { listSessions, type PlayerSession } from '$lib/session';
+	import logo from '$lib/assets/logo.png';
 
 	let sessions = $state<PlayerSession[]>([]);
 
-	$effect(() => {
+	onMount(() => {
 		sessions = listSessions();
 	});
 </script>
@@ -15,19 +17,33 @@
 	<div
 		class="absolute inset-0 -z-10 opacity-20 [background:radial-gradient(circle_at_1px_1px,theme(colors.foreground/0.12)_1px,transparent_0)] [background-size:24px_24px]"
 	></div>
+	<div
+		class="pointer-events-none absolute left-1/2 top-[-180px] -z-10 size-[520px] -translate-x-1/2 rounded-full bg-rubra/15 blur-[110px]"
+		aria-hidden="true"
+	></div>
 
-	<div class="mx-auto flex max-w-4xl flex-col gap-16 px-6 py-16 md:py-24">
-		<header class="flex flex-col gap-4">
-			<span class="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-				Hra pro skautské oddíly
-			</span>
-			<h1 class="text-5xl font-semibold tracking-tight md:text-7xl">
-				PANDEMIC: <span class="text-rubra">Krizový štáb</span>
-			</h1>
-			<p class="max-w-2xl text-base leading-relaxed text-muted-foreground md:text-lg">
-				Hybridní krizová simulace pro tým ~7 hráčů. Telefony v rukou, mapa na projektoru, akce v
-				lese.
-			</p>
+	<div class="mx-auto flex max-w-4xl flex-col gap-14 px-6 py-12 md:py-20">
+		<header class="flex flex-col items-center gap-6 text-center md:items-start md:text-left">
+			<img
+				src={logo}
+				alt="Znak Krizového štábu — pandemic & skautská lilie"
+				width="220"
+				height="220"
+				class="size-36 select-none md:size-48 drop-shadow-[0_18px_40px_rgba(220,38,38,0.25)]"
+				draggable="false"
+			/>
+			<div class="flex flex-col gap-3">
+				<span class="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+					Hra pro skautské oddíly
+				</span>
+				<h1 class="text-5xl font-semibold tracking-tight md:text-7xl">
+					PANDEMIC: <span class="text-rubra">Krizový štáb</span>
+				</h1>
+				<p class="max-w-2xl text-base leading-relaxed text-muted-foreground md:text-lg">
+					Hybridní krizová simulace pro tým ~7 hráčů. Telefony v rukou, mapa na projektoru, akce v
+					lese.
+				</p>
+			</div>
 		</header>
 
 		<section class="grid gap-4 md:grid-cols-2">

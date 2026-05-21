@@ -1,16 +1,17 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { untrack } from 'svelte';
 	import type { PageData } from './$types';
 	import { getBrowserSupabase } from '$lib/supabase/client';
-	import { loadSession, type PlayerSession } from '$lib/session';
-	import { gameApi, GameApiError } from '$lib/api';
+	import { loadSession, saveSession, type PlayerSession } from '$lib/session';
+	import { gameApi, GameApiError, whoami } from '$lib/api';
 	import {
 		DEFAULT_SETTINGS,
 		PHASE_LABELS,
 		ROLE_LABELS
 	} from '$lib/game/constants';
+	import { formatFinishReason } from '$lib/game/events';
 	import type {
 		GameRow,
 		PlayerRow,
@@ -26,6 +27,7 @@
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import { Separator } from '$lib/components/ui/separator';
 	import MapCanvas from '$lib/components/game/MapCanvas.svelte';
+	import BrandMark from '$lib/components/game/BrandMark.svelte';
 	import {
 		Copy,
 		Check,
@@ -36,11 +38,13 @@
 		Shuffle,
 		QrCode,
 		Sparkles,
-		AlertTriangle
+		AlertTriangle,
+		KeyRound
 	} from 'lucide-svelte';
 
 	type CrisisCardOption = { key: string; label: string; effects?: Record<string, unknown>[] };
 	type CrisisDrawWithCard = CrisisDrawRow & { card: CrisisCardRow };
+	type Targets = { player: boolean; city: boolean; disease: boolean };
 
 	let { data }: { data: PageData } = $props();
 
@@ -51,26 +55,73 @@
 	let diseases = $state<DiseaseRow[]>(initial.diseases);
 	let cities = $state<GameCityRow[]>(initial.cities);
 	let activeDraw = $state<CrisisDrawWithCard | null>(null);
+	let pendingOptionKey = $state<string | null>(null);
+	let pendingPlayerId = $state<string | null>(null);
+	let pendingCityKey = $state<string | null>(null);
+	let pendingDisease = $state<DiseaseKey | null>(null);
 
 	let session = $state<PlayerSession | null>(null);
 	let sessionChecked = $state(false);
 	let copied = $state(false);
+	let recoveryCopied = $state(false);
 	let busy = $state(false);
 	let errorMessage = $state<string | null>(null);
 
 	const code = $derived((page.params.code ?? '').toUpperCase());
 
 	$effect(() => {
-		const s = loadSession(code);
-		if (!s || !s.is_admin) {
+		void code;
+		(async () => {
+			const existing = loadSession(code);
+			if (existing && existing.is_admin) {
+				session = existing;
+				sessionChecked = true;
+				return;
+			}
+
+			const token = page.url.searchParams.get('token');
+			if (token) {
+				try {
+					const restored = await whoami(code, token);
+					if (!restored.is_admin) {
+						errorMessage = 'Tento odkaz patří hráči, ne vedoucímu.';
+						goto('/');
+						return;
+					}
+					saveSession(restored);
+					session = restored;
+					sessionChecked = true;
+					const url = new URL(page.url);
+					url.searchParams.delete('token');
+					replaceState(url, page.state);
+					return;
+				} catch (e) {
+					errorMessage =
+						e instanceof GameApiError ? e.message : 'Záchranný odkaz je neplatný.';
+				}
+			}
+
 			goto('/');
-			return;
-		}
-		session = s;
-		sessionChecked = true;
+		})();
 	});
 
 	const joinUrl = $derived(`${page.url.origin}/join?code=${code}`);
+	const recoveryUrl = $derived(
+		session ? `${page.url.origin}/admin/${code}?token=${session.device_token}` : ''
+	);
+
+	async function copyRecoveryLink() {
+		if (!recoveryUrl) return;
+		try {
+			await navigator.clipboard.writeText(recoveryUrl);
+			recoveryCopied = true;
+			setTimeout(() => {
+				recoveryCopied = false;
+			}, 1800);
+		} catch {
+			// ignore
+		}
+	}
 
 	const settings = $derived(
 		(game.settings as Partial<typeof DEFAULT_SETTINGS> | null) ?? DEFAULT_SETTINGS
@@ -82,6 +133,55 @@
 		const raw = activeDraw?.card?.options;
 		if (!Array.isArray(raw)) return [];
 		return raw as CrisisCardOption[];
+	});
+
+	function targetsForEffect(effect: Record<string, unknown>): Targets {
+		const t: Targets = { player: false, city: false, disease: false };
+		const kind = effect.kind as string | undefined;
+		switch (kind) {
+			case 'cure_advance':
+			case 'cure_rollback':
+				if (!effect.disease) t.disease = true;
+				break;
+			case 'quarantine_choose':
+				if (!effect.city_key) t.city = true;
+				break;
+			case 'player_infect':
+				if (!effect.player_id) t.player = true;
+				if (!effect.disease) t.disease = true;
+				break;
+		}
+		return t;
+	}
+
+	function targetsForOption(option: CrisisCardOption | undefined): Targets {
+		const out: Targets = { player: false, city: false, disease: false };
+		if (!option?.effects) return out;
+		for (const e of option.effects) {
+			const t = targetsForEffect(e);
+			if (t.player) out.player = true;
+			if (t.city) out.city = true;
+			if (t.disease) out.disease = true;
+		}
+		return out;
+	}
+
+	const pendingOption = $derived(
+		drawOptions.find((o) => o.key === pendingOptionKey) ?? null
+	);
+	const pendingTargets = $derived(targetsForOption(pendingOption ?? undefined));
+	const pendingReady = $derived(
+		(!pendingTargets.player || !!pendingPlayerId) &&
+			(!pendingTargets.city || !!pendingCityKey) &&
+			(!pendingTargets.disease || !!pendingDisease)
+	);
+
+	$effect(() => {
+		void activeDraw?.id;
+		pendingOptionKey = null;
+		pendingPlayerId = null;
+		pendingCityKey = null;
+		pendingDisease = null;
 	});
 
 	const allRoles: PlayerRole[] = [
@@ -202,11 +302,43 @@
 		});
 	}
 
-	async function resolveCrisis(optionKey: string) {
-		if (!activeDraw) return;
-		const drawId = activeDraw.id;
+	function chooseOption(optionKey: string) {
+		const option = drawOptions.find((o) => o.key === optionKey);
+		if (!option) return;
+		const t = targetsForOption(option);
+		if (!t.player && !t.city && !t.disease) {
+			confirmResolve(optionKey);
+			return;
+		}
+		pendingOptionKey = optionKey;
+		pendingPlayerId = null;
+		pendingCityKey = null;
+		pendingDisease = null;
+	}
+
+	function cancelPending() {
+		pendingOptionKey = null;
+		pendingPlayerId = null;
+		pendingCityKey = null;
+		pendingDisease = null;
+	}
+
+	async function confirmResolve(optionKey?: string) {
+		const draw = activeDraw;
+		const key = optionKey ?? pendingOptionKey;
+		if (!draw || !key) return;
+		const args: {
+			draw_id: string;
+			option_key: string;
+			chosen_player_id?: string;
+			chosen_city_key?: string;
+			chosen_disease?: DiseaseKey;
+		} = { draw_id: draw.id, option_key: key };
+		if (pendingPlayerId) args.chosen_player_id = pendingPlayerId;
+		if (pendingCityKey) args.chosen_city_key = pendingCityKey;
+		if (pendingDisease) args.chosen_disease = pendingDisease;
 		await withBusy(async () => {
-			await gameApi.resolveCrisis(code, { draw_id: drawId, option_key: optionKey });
+			await gameApi.resolveCrisis(code, args);
 		});
 	}
 
@@ -313,13 +445,17 @@
 		{:else}
 			<!-- Header -->
 			<header class="flex flex-wrap items-start justify-between gap-4">
-				<div class="flex flex-col gap-1">
-					<span class="text-xs uppercase tracking-[0.22em] text-muted-foreground">
-						Vedoucí · {session?.display_name ?? ''}
-					</span>
-					<h1 class="text-3xl font-semibold tracking-tight md:text-4xl">
-						{game.name ?? 'Krizový štáb'}
-					</h1>
+				<div class="flex items-start gap-4">
+					<a href="/" aria-label="Domů" class="shrink-0">
+						<BrandMark size={56} class="rounded-md" />
+					</a>
+					<div class="flex flex-col gap-1">
+						<span class="text-xs uppercase tracking-[0.22em] text-muted-foreground">
+							Vedoucí · {session?.display_name ?? ''}
+						</span>
+						<h1 class="text-3xl font-semibold tracking-tight md:text-4xl">
+							{game.name ?? 'Krizový štáb'}
+						</h1>
 					<div class="flex flex-wrap items-center gap-3">
 						<code
 							class="rounded-md border border-border bg-card px-3 py-1 font-mono text-xl tracking-[0.3em]"
@@ -329,6 +465,7 @@
 						<Badge variant={statusBadgeVariant(game.status)} class="uppercase tracking-wider">
 							{statusLabel(game.status)}
 						</Badge>
+					</div>
 					</div>
 				</div>
 
@@ -347,6 +484,16 @@
 						{:else}
 							<Copy class="size-4 text-muted-foreground group-hover:text-foreground" />
 						{/if}
+					</button>
+					<button
+						type="button"
+						onclick={copyRecoveryLink}
+						class="group flex items-center gap-2 rounded-md border border-dashed border-border/70 bg-card/30 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-card/60 hover:text-foreground"
+						aria-label="Zkopírovat záchranný odkaz pro vedoucího"
+						title="Bookmarkni tento odkaz nebo si ho pošli — obnoví relaci vedoucího na jiném zařízení."
+					>
+						<KeyRound class="size-3.5" />
+						{recoveryCopied ? 'Zkopírováno' : 'Záchranný odkaz vedoucího'}
 					</button>
 				</div>
 			</header>
@@ -486,14 +633,93 @@
 									<div class="flex flex-wrap gap-2">
 										{#each drawOptions as opt (opt.key)}
 											<Button
-												variant="outline"
-												onclick={() => resolveCrisis(opt.key)}
+												variant={pendingOptionKey === opt.key ? 'default' : 'outline'}
+												onclick={() => chooseOption(opt.key)}
 												disabled={busy}
 											>
 												{opt.label}
 											</Button>
 										{/each}
 									</div>
+
+									{#if pendingOption}
+										<div
+											class="flex flex-col gap-3 rounded-lg border border-aurum/30 bg-background/50 p-3"
+										>
+											<span class="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+												Cíl pro volbu „{pendingOption.label}"
+											</span>
+
+											{#if pendingTargets.player}
+												<label class="flex flex-col gap-1 text-xs">
+													<span class="text-muted-foreground">Hráč</span>
+													<select
+														bind:value={pendingPlayerId}
+														class="h-9 rounded-md border border-border bg-background px-2 text-sm"
+													>
+														<option value={null}>— Vyber hráče —</option>
+														{#each sortedPlayers as p (p.id)}
+															<option value={p.id}>
+																{p.display_name}{p.role ? ` · ${ROLE_LABELS[p.role].name}` : ''}
+															</option>
+														{/each}
+													</select>
+												</label>
+											{/if}
+
+											{#if pendingTargets.city}
+												<label class="flex flex-col gap-1 text-xs">
+													<span class="text-muted-foreground">Město</span>
+													<select
+														bind:value={pendingCityKey}
+														class="h-9 rounded-md border border-border bg-background px-2 text-sm"
+													>
+														<option value={null}>— Vyber město —</option>
+														{#each [...cities].sort( (a, b) => a.name.localeCompare(b.name) ) as c (c.id)}
+															<option value={c.map_city_key}>
+																{c.name}{c.in_quarantine ? ' (karanténa)' : ''}
+															</option>
+														{/each}
+													</select>
+												</label>
+											{/if}
+
+											{#if pendingTargets.disease}
+												<label class="flex flex-col gap-1 text-xs">
+													<span class="text-muted-foreground">Nemoc</span>
+													<select
+														bind:value={pendingDisease}
+														class="h-9 rounded-md border border-border bg-background px-2 text-sm"
+													>
+														<option value={null}>— Vyber nemoc —</option>
+														{#each diseases as d (d.id)}
+															<option value={d.key}>
+																{d.name}{d.cured ? ' (vyléčeno)' : ''}
+															</option>
+														{/each}
+													</select>
+												</label>
+											{/if}
+
+											<div class="flex flex-wrap gap-2">
+												<Button
+													variant="default"
+													onclick={() => confirmResolve()}
+													disabled={busy || !pendingReady}
+												>
+													Vyhodnotit
+												</Button>
+												<Button
+													variant="ghost"
+													onclick={cancelPending}
+													disabled={busy}
+												>
+													Zrušit
+												</Button>
+											</div>
+										</div>
+									{/if}
+
 									<span class="text-xs text-muted-foreground">
 										Volba se vyhodnotí enginem a propíše do mapy.
 									</span>
@@ -583,7 +809,7 @@
 								<CardTitle class="text-base">Hra skončila</CardTitle>
 							</CardHeader>
 							<CardContent class="text-sm text-muted-foreground">
-								Důvod: {game.finish_reason ?? '—'}
+								Důvod: {formatFinishReason(game.finish_reason)}
 							</CardContent>
 						</Card>
 					{/if}
