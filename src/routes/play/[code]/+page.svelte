@@ -4,6 +4,7 @@
 	import type { PageData } from './$types';
 	import { getBrowserSupabase } from '$lib/supabase/client';
 	import { loadSession, type PlayerSession } from '$lib/session';
+	import { gameApi, GameApiError } from '$lib/api';
 	import { maxInfectionStage, infectionStage } from '$lib/game/load';
 	import {
 		DISEASE_KEYS,
@@ -19,7 +20,9 @@
 		DiseaseRow,
 		GameCityRow,
 		DiseaseKey,
-		PlayerRole
+		PlayerRole,
+		CrisisDrawRow,
+		CrisisCardRow
 	} from '$lib/supabase/types';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -28,20 +31,26 @@
 	import RoleCard from '$lib/components/game/RoleCard.svelte';
 	import PhaseTimer from '$lib/components/game/PhaseTimer.svelte';
 	import InfectionRing from '$lib/components/game/InfectionRing.svelte';
-	import { LifeBuoy, Hourglass } from 'lucide-svelte';
+	import { LifeBuoy, Hourglass, AlertTriangle, FlaskConical } from 'lucide-svelte';
 	import { untrack } from 'svelte';
+
+	type CrisisCardOption = { key: string; label: string };
+	type CrisisDrawWithCard = CrisisDrawRow & { card: CrisisCardRow };
 
 	let { data }: { data: PageData } = $props();
 
 	const code = $derived((page.params.code ?? '').toUpperCase());
 
-	// Snapshot the SSR payload once. Subsequent updates come via realtime.
 	const initial = untrack(() => data.initial);
 
 	let game = $state<GameRow>(initial.game);
 	let players = $state<PlayerRow[]>(initial.players);
 	let diseases = $state<DiseaseRow[]>(initial.diseases);
 	let cities = $state<GameCityRow[]>(initial.cities);
+	let activeDraw = $state<CrisisDrawWithCard | null>(null);
+	let myVote = $state<string | null>(null);
+	let cureBusy = $state<DiseaseKey | null>(null);
+	let toastMessage = $state<string | null>(null);
 
 	let session = $state<PlayerSession | null>(null);
 	let sessionChecked = $state(false);
@@ -97,6 +106,12 @@
 
 	const diseaseLabels = $derived(DISEASE_THEMES[theme]);
 
+	const drawOptions = $derived.by<CrisisCardOption[]>(() => {
+		const raw = activeDraw?.card?.options;
+		if (!Array.isArray(raw)) return [];
+		return raw as CrisisCardOption[];
+	});
+
 	function diseaseBadgeClass(key: DiseaseKey, stage: number) {
 		const colorMap: Record<DiseaseKey, string> = {
 			rubra: 'bg-rubra/20 text-rubra',
@@ -128,6 +143,44 @@
 	function sortedPlayers(list: PlayerRow[]) {
 		return [...list].sort((a, b) => a.slot_index - b.slot_index);
 	}
+
+	function pingToast(msg: string) {
+		toastMessage = msg;
+		setTimeout(() => {
+			if (toastMessage === msg) toastMessage = null;
+		}, 2500);
+	}
+
+	async function voteOnCrisis(optionKey: string) {
+		if (!activeDraw) return;
+		const drawId = activeDraw.id;
+		try {
+			await gameApi.logEvent(code, 'crisis_vote', { draw_id: drawId, option_key: optionKey });
+			myVote = optionKey;
+			pingToast('Hlas zaznamenán. Vedoucí dilema vyhodnotí.');
+		} catch (e) {
+			pingToast(e instanceof GameApiError ? e.message : 'Hlas se neuložil.');
+		}
+	}
+
+	async function requestCure(disease: DiseaseKey) {
+		if (cureBusy) return;
+		cureBusy = disease;
+		try {
+			await gameApi.advanceCure(code, disease, 'advance');
+			pingToast(`Posun léku: ${diseaseLabels[disease]}`);
+		} catch (e) {
+			pingToast(e instanceof GameApiError ? e.message : 'Nepodařilo se posunout lék.');
+		} finally {
+			cureBusy = null;
+		}
+	}
+
+	// reset advisory vote when the crisis changes
+	$effect(() => {
+		void activeDraw?.id;
+		myVote = null;
+	});
 
 	// Realtime subscriptions
 	$effect(() => {
@@ -162,6 +215,18 @@
 				.eq('game_id', gameId);
 			if (rows) cities = rows;
 		}
+		async function refetchActiveDraw() {
+			const { data: row } = await supabase
+				.from('crisis_draws')
+				.select('*, card:crisis_cards(*)')
+				.eq('game_id', gameId)
+				.is('applied_at', null)
+				.order('drawn_at', { ascending: false })
+				.limit(1)
+				.maybeSingle();
+			activeDraw = (row as CrisisDrawWithCard | null) ?? null;
+		}
+		refetchActiveDraw();
 
 		const channel = supabase
 			.channel('game:' + gameId)
@@ -197,7 +262,7 @@
 				'postgres_changes',
 				{ event: '*', schema: 'public', table: 'crisis_draws', filter: `game_id=eq.${gameId}` },
 				() => {
-					// Crisis draws don't have their own slice; downstream views may want them.
+					refetchActiveDraw();
 				}
 			)
 			.subscribe();
@@ -207,8 +272,13 @@
 		};
 	});
 
-	function handleSos() {
-		console.log('SOS');
+	async function handleSos() {
+		try {
+			await gameApi.logEvent(code, 'sos', {});
+			pingToast('SOS odesláno týmu.');
+		} catch (e) {
+			pingToast(e instanceof GameApiError ? e.message : 'SOS se nepodařilo odeslat.');
+		}
 	}
 </script>
 
@@ -295,6 +365,45 @@
 		{:else}
 			<!-- Active game UI -->
 			<section class="flex flex-col gap-4 px-4">
+				<!-- Active crisis dilemma -->
+				{#if activeDraw}
+					<div
+						role="region"
+						aria-label="Krizová karta"
+						class="rounded-2xl border border-aurum/40 bg-aurum/5 px-4 py-4 shadow-sm"
+					>
+						<div class="flex items-center gap-2 text-aurum">
+							<AlertTriangle class="size-4" />
+							<span class="text-[10px] uppercase tracking-[0.22em]">Krize</span>
+						</div>
+						<h2 class="mt-1 text-xl font-semibold leading-tight tracking-tight">
+							{activeDraw.card.title}
+						</h2>
+						<p class="mt-2 text-sm text-foreground/90">
+							{activeDraw.card.body}
+						</p>
+						<div class="mt-3 flex flex-col gap-2">
+							{#each drawOptions as opt (opt.key)}
+								<Button
+									variant={myVote === opt.key ? 'default' : 'outline'}
+									class="justify-start"
+									onclick={() => voteOnCrisis(opt.key)}
+								>
+									{opt.label}
+									{#if myVote === opt.key}
+										<span class="ml-auto text-[10px] uppercase tracking-widest opacity-80">
+											tvůj hlas
+										</span>
+									{/if}
+								</Button>
+							{/each}
+						</div>
+						<p class="mt-2 text-[11px] text-muted-foreground">
+							Hlasování je pomocné — vedoucí potvrdí výsledek.
+						</p>
+					</div>
+				{/if}
+
 				<!-- Movement indicator (LARGEST element) -->
 				<div
 					class={[
@@ -349,6 +458,59 @@
 					</CardContent>
 				</Card>
 
+				<!-- Cure development -->
+				{#if diseases.length > 0}
+					<Card class="bg-card/60">
+						<CardContent class="flex flex-col gap-3 py-4">
+							<div class="flex items-center justify-between">
+								<span class="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+									Vývoj léku
+								</span>
+								<FlaskConical class="size-4 text-muted-foreground" />
+							</div>
+							<div class="flex flex-col gap-2">
+								{#each diseases as d (d.id)}
+									<div class="flex items-center gap-2">
+										<span
+											class={`size-2.5 shrink-0 rounded-full bg-${d.key as DiseaseKey}`}
+											aria-hidden="true"
+										></span>
+										<div class="flex min-w-0 flex-1 flex-col">
+											<span class="truncate text-sm font-medium">{d.name}</span>
+											<div
+												class="mt-0.5 flex gap-1"
+												aria-label={`Pokrok ${d.cure_stage} ze 4`}
+											>
+												{#each [0, 1, 2, 3] as i (i)}
+													<span
+														class={[
+															'h-1.5 w-6 rounded-sm border border-border/40',
+															i < d.cure_stage
+																? `bg-${d.key as DiseaseKey}`
+																: 'bg-background/40'
+														].join(' ')}
+													></span>
+												{/each}
+											</div>
+										</div>
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={d.cured || cureBusy === d.key}
+											onclick={() => requestCure(d.key)}
+										>
+											{d.cured ? 'Vyléčeno' : cureBusy === d.key ? '…' : 'Posunout fázi'}
+										</Button>
+									</div>
+								{/each}
+							</div>
+							<span class="text-[11px] text-muted-foreground">
+								Splňte fyzickou úlohu na stanici a posuňte fázi vývoje.
+							</span>
+						</CardContent>
+					</Card>
+				{/if}
+
 				<Separator />
 
 				<!-- Team snapshot -->
@@ -399,27 +561,6 @@
 					</ul>
 				</div>
 
-				<!-- Diseases summary for context -->
-				{#if diseases.length > 0}
-					<Card class="bg-card/40">
-						<CardContent class="flex flex-col gap-2 py-3">
-							<span class="text-xs uppercase tracking-[0.2em] text-muted-foreground">
-								Nemoci v hře
-							</span>
-							<div class="flex flex-wrap gap-1.5">
-								{#each diseases as d (d.id)}
-									<Badge
-										variant="default"
-										class={`${diseaseBadgeClass(d.key, 1)} ${d.cured ? 'opacity-50 line-through' : ''}`}
-									>
-										{d.name} · {d.cure_stage}/4
-									</Badge>
-								{/each}
-							</div>
-						</CardContent>
-					</Card>
-				{/if}
-
 				<!-- Cities count, just for context -->
 				{#if cities.length > 0}
 					<p class="text-center text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -429,6 +570,20 @@
 			</section>
 		{/if}
 	</div>
+
+	{#if toastMessage}
+		<div
+			class="pointer-events-none fixed inset-x-0 top-16 z-40 flex justify-center px-4"
+			role="status"
+			aria-live="polite"
+		>
+			<div
+				class="pointer-events-auto rounded-md border border-border/60 bg-background/95 px-3 py-2 text-xs shadow-md backdrop-blur"
+			>
+				{toastMessage}
+			</div>
+		</div>
+	{/if}
 
 	{#if sessionChecked && myPlayer && game.status === 'active'}
 		<div

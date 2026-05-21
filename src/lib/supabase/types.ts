@@ -70,7 +70,29 @@ export type Database = {
 					id?: string;
 					round_id?: string | null;
 				};
-				Relationships: [];
+				Relationships: [
+					{
+						foreignKeyName: 'crisis_draws_card_id_fkey';
+						columns: ['card_id'];
+						isOneToOne: false;
+						referencedRelation: 'crisis_cards';
+						referencedColumns: ['id'];
+					},
+					{
+						foreignKeyName: 'crisis_draws_game_id_fkey';
+						columns: ['game_id'];
+						isOneToOne: false;
+						referencedRelation: 'games';
+						referencedColumns: ['id'];
+					},
+					{
+						foreignKeyName: 'crisis_draws_round_id_fkey';
+						columns: ['round_id'];
+						isOneToOne: false;
+						referencedRelation: 'rounds';
+						referencedColumns: ['id'];
+					}
+				];
 			};
 			diseases: {
 				Row: {
@@ -423,4 +445,14 @@ export type MapPayload = {
 		station?: boolean;
 	}>;
 	edges: Array<[string, string]>;
+};
+
+export type CrisisCardOption = {
+	key: string;
+	label: string;
+	effects: Record<string, unknown>[];
+};
+
+export type CrisisDrawWithCard = CrisisDrawRow & {
+	card: CrisisCardRow;
 };

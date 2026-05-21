@@ -5,14 +5,11 @@
 	import type { PageData } from './$types';
 	import { getBrowserSupabase } from '$lib/supabase/client';
 	import { loadSession, type PlayerSession } from '$lib/session';
+	import { gameApi, GameApiError } from '$lib/api';
 	import {
-		DISEASE_KEYS,
-		DISEASE_THEMES,
 		DEFAULT_SETTINGS,
 		PHASE_LABELS,
-		PHASE_ORDER,
-		ROLE_LABELS,
-		type DiseaseTheme
+		ROLE_LABELS
 	} from '$lib/game/constants';
 	import type {
 		GameRow,
@@ -20,8 +17,9 @@
 		DiseaseRow,
 		GameCityRow,
 		PlayerRole,
-		GamePhase,
-		DiseaseKey
+		DiseaseKey,
+		CrisisDrawRow,
+		CrisisCardRow
 	} from '$lib/supabase/types';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
@@ -36,8 +34,13 @@
 		Square,
 		ChevronRight,
 		Shuffle,
-		QrCode
+		QrCode,
+		Sparkles,
+		AlertTriangle
 	} from 'lucide-svelte';
+
+	type CrisisCardOption = { key: string; label: string; effects?: Record<string, unknown>[] };
+	type CrisisDrawWithCard = CrisisDrawRow & { card: CrisisCardRow };
 
 	let { data }: { data: PageData } = $props();
 
@@ -47,6 +50,7 @@
 	let players = $state<PlayerRow[]>(initial.players);
 	let diseases = $state<DiseaseRow[]>(initial.diseases);
 	let cities = $state<GameCityRow[]>(initial.cities);
+	let activeDraw = $state<CrisisDrawWithCard | null>(null);
 
 	let session = $state<PlayerSession | null>(null);
 	let sessionChecked = $state(false);
@@ -68,16 +72,17 @@
 
 	const joinUrl = $derived(`${page.url.origin}/join?code=${code}`);
 
-	const theme = $derived.by<DiseaseTheme>(() => {
-		const t = (game.settings as { theme?: DiseaseTheme } | null)?.theme;
-		return t === 'scout' ? 'scout' : 'clinical';
-	});
-
 	const settings = $derived(
 		(game.settings as Partial<typeof DEFAULT_SETTINGS> | null) ?? DEFAULT_SETTINGS
 	);
 
 	const sortedPlayers = $derived([...players].sort((a, b) => a.slot_index - b.slot_index));
+
+	const drawOptions = $derived.by<CrisisCardOption[]>(() => {
+		const raw = activeDraw?.card?.options;
+		if (!Array.isArray(raw)) return [];
+		return raw as CrisisCardOption[];
+	});
 
 	const allRoles: PlayerRole[] = [
 		'koordinator',
@@ -134,151 +139,75 @@
 	}
 
 	async function updatePlayerRole(playerId: string, role: PlayerRole | null) {
-		const supabase = getBrowserSupabase();
-		await supabase.from('players').update({ role }).eq('id', playerId);
+		try {
+			await gameApi.setRole(code, playerId, role);
+		} catch (e) {
+			errorMessage = e instanceof GameApiError ? e.message : (e as Error).message;
+		}
 	}
 
-	function nextPhase(p: GamePhase): { phase: GamePhase; wrap: boolean } {
-		const idx = PHASE_ORDER.indexOf(p);
-		const ni = (idx + 1) % PHASE_ORDER.length;
-		return { phase: PHASE_ORDER[ni], wrap: ni === 0 };
-	}
-
-	async function advancePhase() {
+	async function withBusy(fn: () => Promise<void>) {
 		if (busy) return;
 		busy = true;
 		errorMessage = null;
 		try {
-			const supabase = getBrowserSupabase();
-			const current = game.current_phase ?? 'porada';
-			const { phase, wrap } = nextPhase(current);
-			const phaseSeconds =
-				settings.phase_durations_s?.[phase] ?? DEFAULT_SETTINGS.phase_durations_s[phase];
-			const ends = new Date(Date.now() + phaseSeconds * 1000).toISOString();
-			const patch: Partial<GameRow> = {
-				current_phase: phase,
-				phase_ends_at: ends
-			};
-			if (wrap) patch.current_round = (game.current_round || 0) + 1;
-			const { error } = await supabase.from('games').update(patch).eq('id', game.id);
-			if (error) errorMessage = error.message;
+			await fn();
+		} catch (e) {
+			errorMessage = e instanceof GameApiError ? e.message : (e as Error).message;
 		} finally {
 			busy = false;
 		}
 	}
 
 	async function startGame() {
-		if (busy) return;
-		busy = true;
-		errorMessage = null;
-		try {
-			const supabase = getBrowserSupabase();
-			const themeNames = DISEASE_THEMES[theme];
+		await withBusy(async () => {
+			await gameApi.start(code);
+		});
+	}
 
-			// 1. Insert disease rows (idempotent: skip on conflict)
-			const diseaseRows = DISEASE_KEYS.map((k) => ({
-				game_id: game.id,
-				key: k,
-				name: themeNames[k],
-				color_token: k
-			}));
-			const { error: diseaseErr } = await supabase
-				.from('diseases')
-				.upsert(diseaseRows, { onConflict: 'game_id,key' });
-			if (diseaseErr) {
-				errorMessage = diseaseErr.message;
-				return;
-			}
-
-			// 2. Build game_cities from map payload
-			const cityRows = initial.map.payload.cities.map((c) => ({
-				game_id: game.id,
-				map_city_key: c.id,
-				name: c.name,
-				x: c.x,
-				y: c.y,
-				color_token: c.color,
-				has_station: !!c.station,
-				infection_levels: {}
-			}));
-			const { error: cityErr } = await supabase
-				.from('game_cities')
-				.upsert(cityRows, { onConflict: 'game_id,map_city_key' });
-			if (cityErr) {
-				errorMessage = cityErr.message;
-				return;
-			}
-
-			// 3. Update game to active
-			const poradaSeconds =
-				settings.phase_durations_s?.porada ?? DEFAULT_SETTINGS.phase_durations_s.porada;
-			const now = new Date();
-			const ends = new Date(now.getTime() + poradaSeconds * 1000).toISOString();
-			const { error: gameErr } = await supabase
-				.from('games')
-				.update({
-					status: 'active',
-					current_round: 1,
-					current_phase: 'porada',
-					started_at: now.toISOString(),
-					phase_ends_at: ends
-				})
-				.eq('id', game.id);
-			if (gameErr) errorMessage = gameErr.message;
-		} finally {
-			busy = false;
-		}
+	async function advancePhase() {
+		await withBusy(async () => {
+			await gameApi.advancePhase(code);
+		});
 	}
 
 	async function pauseGame() {
-		if (busy) return;
-		busy = true;
-		try {
-			const supabase = getBrowserSupabase();
-			await supabase.from('games').update({ status: 'paused' }).eq('id', game.id);
-		} finally {
-			busy = false;
-		}
+		await withBusy(async () => {
+			await gameApi.setStatus(code, 'paused');
+		});
+	}
+
+	async function resumeGame() {
+		await withBusy(async () => {
+			await gameApi.setStatus(code, 'active');
+		});
 	}
 
 	async function endGame() {
-		if (busy) return;
-		busy = true;
-		try {
-			const supabase = getBrowserSupabase();
-			await supabase
-				.from('games')
-				.update({
-					status: 'finished',
-					finished_at: new Date().toISOString(),
-					finish_reason: 'manual_admin_end'
-				})
-				.eq('id', game.id);
-		} finally {
-			busy = false;
-		}
+		await withBusy(async () => {
+			await gameApi.setStatus(code, 'finished', 'manual_admin_end');
+		});
 	}
 
 	async function infectRandom() {
-		if (busy || cities.length === 0) return;
-		busy = true;
-		try {
-			const supabase = getBrowserSupabase();
-			const city = cities[Math.floor(Math.random() * cities.length)];
-			const diseaseKey = DISEASE_KEYS[Math.floor(Math.random() * DISEASE_KEYS.length)];
-			const current =
-				typeof city.infection_levels === 'object' && city.infection_levels
-					? (city.infection_levels as Record<string, number>)
-					: {};
-			const nextStage = Math.min(3, (current[diseaseKey] ?? 0) + 1);
-			const nextLevels = { ...current, [diseaseKey]: nextStage };
-			await supabase
-				.from('game_cities')
-				.update({ infection_levels: nextLevels })
-				.eq('id', city.id);
-		} finally {
-			busy = false;
-		}
+		if (cities.length === 0) return;
+		await withBusy(async () => {
+			await gameApi.infectRandom(code);
+		});
+	}
+
+	async function drawCrisis() {
+		await withBusy(async () => {
+			await gameApi.drawCrisis(code);
+		});
+	}
+
+	async function resolveCrisis(optionKey: string) {
+		if (!activeDraw) return;
+		const drawId = activeDraw.id;
+		await withBusy(async () => {
+			await gameApi.resolveCrisis(code, { draw_id: drawId, option_key: optionKey });
+		});
 	}
 
 	$effect(() => {
@@ -313,6 +242,18 @@
 				.eq('game_id', gameId);
 			if (rows) cities = rows;
 		}
+		async function refetchActiveDraw() {
+			const { data: row } = await supabase
+				.from('crisis_draws')
+				.select('*, card:crisis_cards(*)')
+				.eq('game_id', gameId)
+				.is('applied_at', null)
+				.order('drawn_at', { ascending: false })
+				.limit(1)
+				.maybeSingle();
+			activeDraw = (row as CrisisDrawWithCard | null) ?? null;
+		}
+		refetchActiveDraw();
 
 		const channel = supabase
 			.channel('admin:' + gameId)
@@ -342,6 +283,13 @@
 				{ event: '*', schema: 'public', table: 'game_cities', filter: `game_id=eq.${gameId}` },
 				() => {
 					refetchCities();
+				}
+			)
+			.on(
+				'postgres_changes',
+				{ event: '*', schema: 'public', table: 'crisis_draws', filter: `game_id=eq.${gameId}` },
+				() => {
+					refetchActiveDraw();
 				}
 			)
 			.subscribe();
@@ -391,7 +339,7 @@
 						class="group flex items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-2 text-sm font-medium transition-colors hover:bg-card"
 						aria-label="Zkopírovat odkaz pro hráče"
 					>
-						<span class="truncate max-w-[26ch] text-muted-foreground">
+						<span class="max-w-[26ch] truncate text-muted-foreground">
 							{joinUrl.replace(/^https?:\/\//, '')}
 						</span>
 						{#if copied}
@@ -522,6 +470,37 @@
 
 					<!-- Phase / lifecycle controls -->
 					{#if game.status === 'active'}
+						<!-- Active crisis card -->
+						{#if activeDraw}
+							<Card class="border-aurum/40 bg-aurum/5">
+								<CardHeader>
+									<CardTitle class="flex items-center gap-2 text-base">
+										<AlertTriangle class="size-4 text-aurum" />
+										Krize: {activeDraw.card.title}
+									</CardTitle>
+								</CardHeader>
+								<CardContent class="flex flex-col gap-3">
+									<p class="text-sm text-foreground/90">
+										{activeDraw.card.body}
+									</p>
+									<div class="flex flex-wrap gap-2">
+										{#each drawOptions as opt (opt.key)}
+											<Button
+												variant="outline"
+												onclick={() => resolveCrisis(opt.key)}
+												disabled={busy}
+											>
+												{opt.label}
+											</Button>
+										{/each}
+									</div>
+									<span class="text-xs text-muted-foreground">
+										Volba se vyhodnotí enginem a propíše do mapy.
+									</span>
+								</CardContent>
+							</Card>
+						{/if}
+
 						<Card class="bg-card/60">
 							<CardHeader>
 								<CardTitle class="text-base">Průběh hry</CardTitle>
@@ -568,6 +547,14 @@
 								<CardTitle class="text-base">Ruční zásahy</CardTitle>
 							</CardHeader>
 							<CardContent class="flex flex-wrap gap-2">
+								<Button
+									variant="outline"
+									onclick={drawCrisis}
+									disabled={busy || !!activeDraw}
+								>
+									<Sparkles class="size-4" />
+									Vylosovat krizi
+								</Button>
 								<Button variant="outline" onclick={infectRandom} disabled={busy}>
 									<Shuffle class="size-4" />
 									+1 infekce náhodnému městu
@@ -580,22 +567,7 @@
 								<CardTitle class="text-base">Pauza</CardTitle>
 							</CardHeader>
 							<CardContent class="flex flex-wrap gap-2">
-								<Button
-									onclick={async () => {
-										if (busy) return;
-										busy = true;
-										try {
-											const supabase = getBrowserSupabase();
-											await supabase
-												.from('games')
-												.update({ status: 'active' })
-												.eq('id', game.id);
-										} finally {
-											busy = false;
-										}
-									}}
-									disabled={busy}
-								>
+								<Button onclick={resumeGame} disabled={busy}>
 									<Play class="size-4" />
 									Pokračovat
 								</Button>
@@ -647,7 +619,9 @@
 						<MapCanvas map={initial.map} {cities} />
 					</div>
 					<div class="flex flex-wrap items-center justify-between gap-2 text-xs">
-						<span class="text-muted-foreground">{cities.length} / {initial.map.payload.cities.length} měst</span>
+						<span class="text-muted-foreground"
+							>{cities.length} / {initial.map.payload.cities.length} měst</span
+						>
 						<a
 							href={`/board/${code}`}
 							class="text-muted-foreground underline-offset-4 hover:underline"
