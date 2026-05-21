@@ -72,8 +72,8 @@
 		game.status === 'finished' && diseases.length > 0 && diseases.every((d) => d.cured)
 	);
 
-	function diseaseBg(key: DiseaseKey) {
-		return `bg-${key}`;
+	function diseaseColorStyle(key: DiseaseKey) {
+		return `background-color: var(--${key});`;
 	}
 
 	function formatTime(iso: string) {
@@ -265,7 +265,8 @@
 					{#each orderedDiseases as d (d.id)}
 						<div class="flex items-center gap-3">
 							<span
-								class={`size-3 shrink-0 rounded-full ${diseaseBg(d.key)} ${d.cured ? '' : 'opacity-70'}`}
+								class={`size-3 shrink-0 rounded-full ${d.cured ? '' : 'opacity-70'}`}
+								style={diseaseColorStyle(d.key)}
 								aria-hidden="true"
 							></span>
 							<span class="min-w-0 flex-1 truncate text-sm font-medium">
@@ -276,8 +277,9 @@
 									<span
 										class={[
 											'size-3 rounded-sm border border-border/50',
-											i < d.cure_stage ? diseaseBg(d.key) : 'bg-background/40'
+											i < d.cure_stage ? '' : 'bg-background/40'
 										].join(' ')}
+										style={i < d.cure_stage ? diseaseColorStyle(d.key) : ''}
 									></span>
 								{/each}
 							</div>
@@ -309,7 +311,7 @@
 			<div class="grid grid-cols-2 gap-2 text-[11px] uppercase tracking-[0.18em]">
 				{#each DISEASE_KEYS as k (k)}
 					<div class="flex items-center gap-2">
-						<span class={`size-2.5 rounded-full ${diseaseBg(k)}`} aria-hidden="true"></span>
+						<span class="size-2.5 rounded-full" style={diseaseColorStyle(k)} aria-hidden="true"></span>
 						<span class="text-muted-foreground">{diseaseLabels[k]}</span>
 					</div>
 				{/each}

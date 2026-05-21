@@ -1,6 +1,6 @@
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { requirePlayer, readBody } from '$lib/server/auth';
+import { requireAdmin, readBody } from '$lib/server/auth';
 import { loadDbState, applyEngineResult } from '$lib/engine/persistence';
 import { advanceCure, rollbackCure } from '$lib/engine';
 import { getAdminSupabase } from '$lib/supabase/admin';
@@ -17,7 +17,7 @@ export const POST: RequestHandler = async (event) => {
 	const body = await readBody<Body>(event);
 	const supabase = getAdminSupabase();
 	const { state } = await loadDbState(supabase, event.params.code!);
-	const player = await requirePlayer(supabase, state.game.id, body.device_token);
+	await requireAdmin(supabase, state.game.id, body.device_token);
 
 	if (state.game.status !== 'active') {
 		throw error(409, 'Hra není aktivní.');
@@ -28,11 +28,6 @@ export const POST: RequestHandler = async (event) => {
 
 	const direction = body.direction ?? 'advance';
 	const phases = Math.max(1, Math.min(4, body.phases ?? 1));
-
-	// Only the leader can roll back cures. Anyone can advance their team's cure.
-	if (direction === 'rollback' && !player.is_admin) {
-		throw error(403, 'Pouze vedoucí může vrátit fázi léku.');
-	}
 
 	let result;
 	if (direction === 'rollback') {

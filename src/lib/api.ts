@@ -57,6 +57,8 @@ export const gameApi = {
 	setRole: (code: string, player_id: string, role: string | null) =>
 		call(code, 'admin', { action: 'set_role', player_id, role }),
 	infectRandom: (code: string) => call(code, 'admin', { action: 'infect_random' }),
+	healPlayer: (code: string, player_id: string, disease: string, amount = 1) =>
+		call(code, 'admin', { action: 'heal_player', player_id, disease, amount }),
 	logEvent: (code: string, kind: string, payload: Record<string, unknown> = {}) =>
 		call(code, 'event', { kind, payload })
 };

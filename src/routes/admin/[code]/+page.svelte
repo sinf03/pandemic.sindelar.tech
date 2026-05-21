@@ -8,8 +8,11 @@
 	import { gameApi, GameApiError, whoami } from '$lib/api';
 	import {
 		DEFAULT_SETTINGS,
+		DISEASE_KEYS,
+		DISEASE_THEMES,
 		PHASE_LABELS,
-		ROLE_LABELS
+		ROLE_LABELS,
+		type DiseaseTheme
 	} from '$lib/game/constants';
 	import { formatFinishReason } from '$lib/game/events';
 	import type {
@@ -126,6 +129,21 @@
 	const settings = $derived(
 		(game.settings as Partial<typeof DEFAULT_SETTINGS> | null) ?? DEFAULT_SETTINGS
 	);
+
+	const theme = $derived.by<DiseaseTheme>(() => {
+		const t = (game.settings as { theme?: DiseaseTheme } | null)?.theme;
+		return t === 'scout' ? 'scout' : 'clinical';
+	});
+	const diseaseLabels = $derived(DISEASE_THEMES[theme]);
+
+	const orderedDiseases = $derived.by(() => {
+		const out: DiseaseRow[] = [];
+		for (const k of DISEASE_KEYS) {
+			const d = diseases.find((x) => x.key === k);
+			if (d) out.push(d);
+		}
+		return out;
+	});
 
 	const sortedPlayers = $derived([...players].sort((a, b) => a.slot_index - b.slot_index));
 
@@ -300,6 +318,31 @@
 		await withBusy(async () => {
 			await gameApi.drawCrisis(code);
 		});
+	}
+
+	async function advanceCure(disease: DiseaseKey) {
+		await withBusy(async () => {
+			await gameApi.advanceCure(code, disease, 'advance');
+		});
+	}
+
+	async function rollbackCure(disease: DiseaseKey) {
+		await withBusy(async () => {
+			await gameApi.advanceCure(code, disease, 'rollback');
+		});
+	}
+
+	async function healPlayer(playerId: string, disease: DiseaseKey) {
+		await withBusy(async () => {
+			await gameApi.healPlayer(code, playerId, disease, 1);
+		});
+	}
+
+	function playerInfectionStage(p: PlayerRow, key: DiseaseKey): number {
+		const raw = p.infection_levels;
+		if (typeof raw !== 'object' || raw === null) return 0;
+		const v = (raw as Record<string, unknown>)[key];
+		return typeof v === 'number' ? Math.max(0, Math.min(3, Math.round(v))) : 0;
 	}
 
 	function chooseOption(optionKey: string) {
@@ -569,46 +612,73 @@
 							{/if}
 							{#each sortedPlayers as p (p.id)}
 								<div
-									class="flex flex-wrap items-center gap-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2"
+									class="flex flex-col gap-2 rounded-lg border border-border/40 bg-background/40 px-3 py-2"
 								>
-									<span
-										class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted font-mono text-[11px]"
-									>
-										#{p.slot_index + 1}
-									</span>
-									<div class="flex min-w-0 flex-1 flex-col">
-										<span class="truncate text-sm font-medium">
-											{p.display_name}{p.is_admin ? ' · vedoucí' : ''}
+									<div class="flex flex-wrap items-center gap-3">
+										<span
+											class="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted font-mono text-[11px]"
+										>
+											#{p.slot_index + 1}
 										</span>
-										<span class="truncate text-[11px] text-muted-foreground">
-											{p.role ? ROLE_LABELS[p.role].name : 'Bez role'}
-										</span>
+										<div class="flex min-w-0 flex-1 flex-col">
+											<span class="truncate text-sm font-medium">
+												{p.display_name}{p.is_admin ? ' · vedoucí' : ''}
+											</span>
+											<span class="truncate text-[11px] text-muted-foreground">
+												{p.role ? ROLE_LABELS[p.role].name : 'Bez role'}
+											</span>
+										</div>
+
+										<label class="sr-only" for={`role-${p.id}`}>Role</label>
+										<select
+											id={`role-${p.id}`}
+											class="h-8 rounded-md border border-border bg-background px-2 text-xs"
+											value={p.role ?? ''}
+											onchange={(e) => {
+												const v = e.currentTarget.value;
+												updatePlayerRole(p.id, v === '' ? null : (v as PlayerRole));
+											}}
+										>
+											<option value="">— Bez role —</option>
+											{#each allRoles as r (r)}
+												<option value={r}>{ROLE_LABELS[r].name}</option>
+											{/each}
+										</select>
+
+										{#if isConnected(p)}
+											<Badge variant="default" class="bg-viridis/20 text-viridis">
+												Připojen
+											</Badge>
+										{:else}
+											<Badge variant="outline" class="text-muted-foreground">
+												Offline
+											</Badge>
+										{/if}
 									</div>
 
-									<label class="sr-only" for={`role-${p.id}`}>Role</label>
-									<select
-										id={`role-${p.id}`}
-										class="h-8 rounded-md border border-border bg-background px-2 text-xs"
-										value={p.role ?? ''}
-										onchange={(e) => {
-											const v = e.currentTarget.value;
-											updatePlayerRole(p.id, v === '' ? null : (v as PlayerRole));
-										}}
-									>
-										<option value="">— Bez role —</option>
-										{#each allRoles as r (r)}
-											<option value={r}>{ROLE_LABELS[r].name}</option>
-										{/each}
-									</select>
-
-									{#if isConnected(p)}
-										<Badge variant="default" class="bg-viridis/20 text-viridis">
-											Připojen
-										</Badge>
-									{:else}
-										<Badge variant="outline" class="text-muted-foreground">
-											Offline
-										</Badge>
+									{#if game.status === 'active' && !p.is_admin}
+										<div class="flex flex-wrap items-center gap-2 pl-10">
+											<span class="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">
+												Nákaza
+											</span>
+											{#each DISEASE_KEYS as k (k)}
+												{@const stage = playerInfectionStage(p, k)}
+												<button
+													type="button"
+													onclick={() => healPlayer(p.id, k)}
+													disabled={busy || stage === 0}
+													title={`Vyléčit ${diseaseLabels[k]} o jeden stupeň`}
+													class="flex items-center gap-1 rounded-md border border-border/50 bg-background/60 px-2 py-1 text-[11px] transition-colors hover:bg-background disabled:cursor-not-allowed disabled:opacity-40"
+												>
+													<span
+														class="size-2 rounded-full"
+														style={`background-color: var(--${k});`}
+														aria-hidden="true"
+													></span>
+													<span class="font-mono tabular-nums">{stage}</span>
+												</button>
+											{/each}
+										</div>
 									{/if}
 								</div>
 							{/each}
@@ -814,21 +884,72 @@
 						</Card>
 					{/if}
 
-					<!-- Diseases summary (active+) -->
-					{#if diseases.length > 0}
+					<!-- Vývoj léku — vedoucí posouvá po splnění fyzické úlohy -->
+					{#if orderedDiseases.length > 0}
 						<Card class="bg-card/40">
 							<CardHeader>
-								<CardTitle class="text-base">Nemoci</CardTitle>
+								<CardTitle class="text-base">Vývoj léku</CardTitle>
 							</CardHeader>
-							<CardContent class="flex flex-wrap gap-2">
-								{#each diseases as d (d.id)}
-									<Badge
-										variant="default"
-										class={`bg-${d.key as DiseaseKey}/20 text-${d.key as DiseaseKey} ${d.cured ? 'opacity-50' : ''}`}
+							<CardContent class="flex flex-col gap-2">
+								{#each orderedDiseases as d (d.id)}
+									<div
+										class="flex flex-wrap items-center gap-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2"
 									>
-										{d.name} · {d.cure_stage}/4
-									</Badge>
+										<span
+											class="size-3 shrink-0 rounded-full"
+											style={`background-color: var(--${d.key});`}
+											aria-hidden="true"
+										></span>
+										<span class="min-w-0 flex-1 truncate text-sm font-medium">{d.name}</span>
+										<div class="flex gap-1" aria-label={`Pokrok ${d.cure_stage} ze 4`}>
+											{#each [0, 1, 2, 3] as i (i)}
+												<span
+													class={[
+														'size-3 rounded-sm border border-border/50',
+														i < d.cure_stage ? '' : 'bg-background/40'
+													].join(' ')}
+													style={i < d.cure_stage
+														? `background-color: var(--${d.key});`
+														: ''}
+												></span>
+											{/each}
+										</div>
+										<span class="w-10 text-right font-mono text-xs tabular-nums text-muted-foreground">
+											{d.cure_stage}/4
+										</span>
+										{#if game.status === 'active'}
+											<div class="flex gap-1">
+												<Button
+													variant="outline"
+													size="sm"
+													disabled={busy || d.cured}
+													onclick={() => advanceCure(d.key)}
+													title="Splnil úkol — posunout fázi"
+												>
+													+1
+												</Button>
+												<Button
+													variant="ghost"
+													size="sm"
+													disabled={busy || d.cure_stage === 0}
+													onclick={() => rollbackCure(d.key)}
+													title="Vrátit fázi zpět"
+												>
+													−1
+												</Button>
+											</div>
+										{:else if d.cured}
+											<span class="text-[10px] uppercase tracking-widest text-viridis">
+												vyléčeno
+											</span>
+										{/if}
+									</div>
 								{/each}
+								{#if game.status === 'active'}
+									<span class="text-[11px] text-muted-foreground">
+										Hráč splní fyzickou úlohu na stanici → posuneš fázi tlačítkem „+1".
+									</span>
+								{/if}
 							</CardContent>
 						</Card>
 					{/if}

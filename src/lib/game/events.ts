@@ -42,9 +42,29 @@ export function formatEvent(kind: string, payload: Json, ctx: FormatCtx = {}): s
 	const theme = ctx.theme ?? 'clinical';
 
 	switch (kind) {
+		case 'game_created': {
+			const code = typeof p.code === 'string' ? p.code : '';
+			const by = typeof p.by === 'string' ? p.by : '';
+			if (by && code) return `Hra ${code} vytvořena vedoucím ${by}`;
+			if (code) return `Hra ${code} vytvořena`;
+			return 'Hra vytvořena';
+		}
+		case 'player_join': {
+			const name = typeof p.name === 'string' ? p.name : 'hráč';
+			const slot = typeof p.slot === 'number' ? p.slot : null;
+			return slot !== null ? `Hráč ${name} se připojil (#${slot})` : `Hráč ${name} se připojil`;
+		}
+		case 'player_leave': {
+			const name = typeof p.name === 'string' ? p.name : 'hráč';
+			return `Hráč ${name} se odpojil`;
+		}
 		case 'phase_start': {
-			const round = typeof p.round === 'number' ? p.round : '?';
-			return `Začalo kolo ${round} — fáze ${phaseLabel(p.phase)}`;
+			const round = typeof p.round === 'number' ? p.round : null;
+			const phase = phaseLabel(p.phase);
+			if (round === 1 && p.phase === 'porada') return 'Hra začala — fáze Porada';
+			return round !== null
+				? `Začalo kolo ${round} — fáze ${phase}`
+				: `Začala fáze ${phase}`;
 		}
 		case 'infection': {
 			const stage = typeof p.new_stage === 'number' ? p.new_stage : '?';
@@ -71,9 +91,13 @@ export function formatEvent(kind: string, payload: Json, ctx: FormatCtx = {}): s
 			const stage = typeof p.new_stage === 'number' ? p.new_stage : '?';
 			return `${playerLabel(p.player_id, p, ctx)} nakažen — ${diseaseLabel(p.disease, theme)} (stupeň ${stage})`;
 		}
+		case 'player_heal': {
+			const stage = typeof p.new_stage === 'number' ? p.new_stage : 0;
+			return `${playerLabel(p.player_id, p, ctx)} vyléčen — ${diseaseLabel(p.disease, theme)} (stupeň ${stage})`;
+		}
 		case 'outcome': {
 			const reason = typeof p.reason === 'string' ? p.reason : '';
-			const head = p.outcome === 'win' ? 'Vítězství' : 'Prohra';
+			const head = p.outcome === 'win' ? 'Hra skončila — vítězství' : 'Hra skončila — prohra';
 			return reason ? `${head}: ${reason}` : head;
 		}
 		case 'crisis_drawn':

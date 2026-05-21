@@ -51,7 +51,6 @@
 	let cities = $state<GameCityRow[]>(initial.cities);
 	let activeDraw = $state<CrisisDrawWithCard | null>(null);
 	let myVote = $state<string | null>(null);
-	let cureBusy = $state<DiseaseKey | null>(null);
 	let toastMessage = $state<string | null>(null);
 
 	let session = $state<PlayerSession | null>(null);
@@ -166,19 +165,6 @@
 			pingToast('Hlas zaznamenán. Vedoucí dilema vyhodnotí.');
 		} catch (e) {
 			pingToast(e instanceof GameApiError ? e.message : 'Hlas se neuložil.');
-		}
-	}
-
-	async function requestCure(disease: DiseaseKey) {
-		if (cureBusy) return;
-		cureBusy = disease;
-		try {
-			await gameApi.advanceCure(code, disease, 'advance');
-			pingToast(`Posun léku: ${diseaseLabels[disease]}`);
-		} catch (e) {
-			pingToast(e instanceof GameApiError ? e.message : 'Nepodařilo se posunout lék.');
-		} finally {
-			cureBusy = null;
 		}
 	}
 
@@ -511,7 +497,8 @@
 								{#each diseases as d (d.id)}
 									<div class="flex items-center gap-2">
 										<span
-											class={`size-2.5 shrink-0 rounded-full bg-${d.key as DiseaseKey}`}
+											class="size-2.5 shrink-0 rounded-full"
+											style={`background-color: var(--${d.key as DiseaseKey});`}
 											aria-hidden="true"
 										></span>
 										<div class="flex min-w-0 flex-1 flex-col">
@@ -524,27 +511,29 @@
 													<span
 														class={[
 															'h-1.5 w-6 rounded-sm border border-border/40',
-															i < d.cure_stage
-																? `bg-${d.key as DiseaseKey}`
-																: 'bg-background/40'
+															i < d.cure_stage ? '' : 'bg-background/40'
 														].join(' ')}
+														style={i < d.cure_stage
+															? `background-color: var(--${d.key as DiseaseKey});`
+															: ''}
 													></span>
 												{/each}
 											</div>
 										</div>
-										<Button
-											variant="outline"
-											size="sm"
-											disabled={d.cured || cureBusy === d.key}
-											onclick={() => requestCure(d.key)}
-										>
-											{d.cured ? 'Vyléčeno' : cureBusy === d.key ? '…' : 'Posunout fázi'}
-										</Button>
+										{#if d.cured}
+											<span class="text-[10px] uppercase tracking-widest text-viridis">
+												vyléčeno
+											</span>
+										{:else}
+											<span class="text-[10px] font-mono tabular-nums text-muted-foreground">
+												{d.cure_stage}/4
+											</span>
+										{/if}
 									</div>
 								{/each}
 							</div>
 							<span class="text-[11px] text-muted-foreground">
-								Splňte fyzickou úlohu na stanici a posuňte fázi vývoje.
+								Po splnění fyzické úlohy na stanici nahlas vedoucímu — on posune fázi.
 							</span>
 						</CardContent>
 					</Card>
