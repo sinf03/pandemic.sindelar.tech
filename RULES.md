@@ -235,7 +235,7 @@ Co znamená co v pásu událostí:
 ## Známá omezení
 
 - **Místa stanic** v současné verzi nejsou propojená s mapou v aplikaci — engine pracuje s městy, ale které město odpovídá které fyzické stanici si vedoucí drží v hlavě (nebo si to napíše na papír). Plánujeme stanice do aplikace doplnit.
-- **Hlasy** se nepočítají automaticky — vedoucí vidí v pásu událostí, kdo jak hlasoval, ale součet nehlídá engine.
+- **Hlasy o krizi** jsou poradní — vedoucí v admin panelu vidí živý počet hlasů a jmenovitý seznam u každé varianty, ale konečné slovo má vždy on. Engine hlasování nepočítá jako rozhodnutí.
 - **Zdroje** (vzorek, léčivo, energie, data, personál) v aplikaci existují, ale výchozí flow je nepoužívá — připraveno pro pokročilejší scénáře.
 
 ---

@@ -63,6 +63,40 @@
 	let pendingCityKey = $state<string | null>(null);
 	let pendingDisease = $state<DiseaseKey | null>(null);
 
+	type CrisisVote = {
+		event_id: number;
+		player_id: string;
+		player_name: string;
+		option_key: string;
+		at: string;
+	};
+	let voteEvents = $state<CrisisVote[]>([]);
+
+	const latestVoteByPlayer = $derived.by(() => {
+		const m = new Map<string, CrisisVote>();
+		for (const v of voteEvents) {
+			const prev = m.get(v.player_id);
+			if (!prev || new Date(v.at).getTime() > new Date(prev.at).getTime()) {
+				m.set(v.player_id, v);
+			}
+		}
+		return m;
+	});
+
+	const votesByOption = $derived.by(() => {
+		const m = new Map<string, CrisisVote[]>();
+		for (const v of latestVoteByPlayer.values()) {
+			const list = m.get(v.option_key) ?? [];
+			list.push(v);
+			m.set(v.option_key, list);
+		}
+		return m;
+	});
+
+	function votersFor(optionKey: string): CrisisVote[] {
+		return votesByOption.get(optionKey) ?? [];
+	}
+
 	let session = $state<PlayerSession | null>(null);
 	let sessionChecked = $state(false);
 	let copied = $state(false);
@@ -427,6 +461,35 @@
 				.limit(1)
 				.maybeSingle();
 			activeDraw = (row as CrisisDrawWithCard | null) ?? null;
+			await refetchVotes();
+		}
+		async function refetchVotes() {
+			const drawId = activeDraw?.id;
+			if (!drawId) {
+				voteEvents = [];
+				return;
+			}
+			const { data: rows } = await supabase
+				.from('events_log')
+				.select('id, at, payload')
+				.eq('game_id', gameId)
+				.eq('kind', 'crisis_vote')
+				.order('at', { ascending: true });
+			if (!rows) return;
+			const next: CrisisVote[] = [];
+			for (const r of rows) {
+				const p = (r.payload as Record<string, unknown>) ?? {};
+				if (p.draw_id !== drawId) continue;
+				if (typeof p.player_id !== 'string' || typeof p.option_key !== 'string') continue;
+				next.push({
+					event_id: r.id,
+					player_id: p.player_id,
+					player_name: typeof p.player_name === 'string' ? p.player_name : '',
+					option_key: p.option_key,
+					at: r.at
+				});
+			}
+			voteEvents = next;
 		}
 		refetchActiveDraw();
 
@@ -465,6 +528,28 @@
 				{ event: '*', schema: 'public', table: 'crisis_draws', filter: `game_id=eq.${gameId}` },
 				() => {
 					refetchActiveDraw();
+				}
+			)
+			.on(
+				'postgres_changes',
+				{ event: 'INSERT', schema: 'public', table: 'events_log', filter: `game_id=eq.${gameId}` },
+				(payload) => {
+					const row = payload.new as { id: number; at: string; kind: string; payload: Record<string, unknown> };
+					if (row.kind !== 'crisis_vote') return;
+					const drawId = activeDraw?.id;
+					const p = row.payload ?? {};
+					if (!drawId || p.draw_id !== drawId) return;
+					if (typeof p.player_id !== 'string' || typeof p.option_key !== 'string') return;
+					voteEvents = [
+						...voteEvents,
+						{
+							event_id: row.id,
+							player_id: p.player_id,
+							player_name: typeof p.player_name === 'string' ? p.player_name : '',
+							option_key: p.option_key,
+							at: row.at
+						}
+					];
 				}
 			)
 			.subscribe();
@@ -700,16 +785,43 @@
 									<p class="text-sm text-foreground/90">
 										{activeDraw.card.body}
 									</p>
-									<div class="flex flex-wrap gap-2">
+									{@const totalVotes = latestVoteByPlayer.size}
+									<div class="flex flex-col gap-2">
 										{#each drawOptions as opt (opt.key)}
-											<Button
-												variant={pendingOptionKey === opt.key ? 'default' : 'outline'}
-												onclick={() => chooseOption(opt.key)}
-												disabled={busy}
-											>
-												{opt.label}
-											</Button>
+											{@const voters = votersFor(opt.key)}
+											{@const count = voters.length}
+											<div class="flex flex-wrap items-center gap-2">
+												<Button
+													variant={pendingOptionKey === opt.key ? 'default' : 'outline'}
+													onclick={() => chooseOption(opt.key)}
+													disabled={busy}
+													class="min-w-32 justify-start"
+												>
+													<span class="flex-1 text-left">{opt.label}</span>
+													<span
+														class={[
+															'ml-3 rounded-full px-2 py-0.5 font-mono text-[11px] tabular-nums',
+															count > 0
+																? 'bg-aurum/20 text-aurum'
+																: 'bg-muted text-muted-foreground'
+														].join(' ')}
+														aria-label={`${count} hlasů`}
+													>
+														{count}
+													</span>
+												</Button>
+												{#if count > 0}
+													<span class="text-[11px] text-muted-foreground">
+														{voters.map((v) => v.player_name || '?').join(', ')}
+													</span>
+												{/if}
+											</div>
 										{/each}
+										<span class="text-[11px] text-muted-foreground">
+											{totalVotes > 0
+												? `Hlasovalo ${totalVotes} z ${players.filter((pl) => !pl.is_admin).length} hráčů.`
+												: 'Zatím žádné hlasy.'}
+										</span>
 									</div>
 
 									{#if pendingOption}
