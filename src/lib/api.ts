@@ -12,13 +12,16 @@ export class GameApiError extends Error {
 	}
 }
 
-async function call(code: string, path: string, body: Record<string, unknown> = {}) {
-	const session = loadSession(code);
-	if (!session) throw new GameApiError('Není uložena relace pro tuto hru.', 401);
+async function callWithToken(
+	code: string,
+	path: string,
+	deviceToken: string,
+	body: Record<string, unknown> = {}
+) {
 	const res = await fetch(`/api/games/${code.toUpperCase()}/${path}`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ device_token: session.device_token, ...body })
+		body: JSON.stringify({ device_token: deviceToken, ...body })
 	});
 	const contentType = res.headers.get('content-type') ?? '';
 	const parsed = contentType.includes('application/json')
@@ -35,6 +38,29 @@ async function call(code: string, path: string, body: Record<string, unknown> = 
 	}
 	return parsed as Record<string, unknown>;
 }
+
+async function call(code: string, path: string, body: Record<string, unknown> = {}) {
+	const session = loadSession(code);
+	if (!session) throw new GameApiError('Není uložena relace pro tuto hru.', 401);
+	return callWithToken(code, path, session.device_token, body);
+}
+
+/**
+ * Used by station-tablet pages that hold a leader device_token in the URL but
+ * have no stored session of their own.
+ */
+export const stationApi = {
+	stationComplete: (
+		code: string,
+		deviceToken: string,
+		args: {
+			station: 'lab' | 'centrala' | 'sklad' | 'pole' | 'karantena';
+			task_label?: string;
+			player_id?: string;
+			disease?: string;
+		}
+	) => callWithToken(code, 'admin', deviceToken, { action: 'station_complete', ...args })
+};
 
 export const gameApi = {
 	start: (code: string) => call(code, 'start'),
@@ -59,6 +85,17 @@ export const gameApi = {
 	infectRandom: (code: string) => call(code, 'admin', { action: 'infect_random' }),
 	healPlayer: (code: string, player_id: string, disease: string, amount = 1) =>
 		call(code, 'admin', { action: 'heal_player', player_id, disease, amount }),
+	setCityInfection: (code: string, city_key: string, disease: string, stage: number) =>
+		call(code, 'admin', { action: 'set_city_infection', city_key, disease, stage }),
+	stationComplete: (
+		code: string,
+		args: {
+			station: 'lab' | 'centrala' | 'sklad' | 'pole' | 'karantena';
+			task_label?: string;
+			player_id?: string;
+			disease?: string;
+		}
+	) => call(code, 'admin', { action: 'station_complete', ...args }),
 	logEvent: (code: string, kind: string, payload: Record<string, unknown> = {}) =>
 		call(code, 'event', { kind, payload })
 };

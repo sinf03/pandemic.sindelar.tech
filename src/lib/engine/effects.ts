@@ -22,7 +22,8 @@ export type CrisisEffect =
 	| { kind: 'infection_speed_up'; rounds?: number }
 	| { kind: 'player_lock_role'; role?: string; rounds?: number }
 	| { kind: 'player_lock_any'; rounds?: number }
-	| { kind: 'player_infect'; amount?: number; disease?: DiseaseKey; player_id?: string };
+	| { kind: 'player_infect'; amount?: number; disease?: DiseaseKey; player_id?: string }
+	| { kind: 'player_infect_all'; amount?: number; disease?: DiseaseKey | 'random' };
 
 export type ResolveOptions = {
 	rng: Rng;
@@ -131,6 +132,23 @@ function applyOne(state: GameState, effect: CrisisEffect, options: ResolveOption
 			const events: EngineEvent[] = [];
 			for (const c of picks) {
 				const r = applyInfection(s, c.key, c.color, options.rng);
+				s = r.state;
+				events.push(...r.events);
+			}
+			return { state: s, events };
+		}
+		case 'player_infect_all': {
+			const amount = effect.amount ?? 1;
+			const fixedDisease =
+				effect.disease && effect.disease !== 'random' ? effect.disease : null;
+			let s = state;
+			const events: EngineEvent[] = [];
+			for (const p of s.players) {
+				if (p.is_admin) continue;
+				const d =
+					fixedDisease ?? options.chosen_disease ?? pickRandomActiveDisease(s, options.rng);
+				if (!d) continue;
+				const r = infectPlayer(s, p.id, d, amount);
 				s = r.state;
 				events.push(...r.events);
 			}

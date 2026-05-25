@@ -35,7 +35,7 @@ export const POST: RequestHandler = async (event) => {
 	if (draw.applied_at) throw error(409, 'Tato karta už byla vyřešena.');
 
 	const card = draw.card as unknown as
-		| { options: Array<{ key: string; effects: CrisisEffect[] }> }
+		| { title: string; options: Array<{ key: string; label: string; reason?: string; effects: CrisisEffect[] }> }
 		| null;
 	if (!card) throw error(500, 'Krizová karta postrádá data.');
 	const option = card.options.find((o) => o.key === body.option_key);
@@ -54,10 +54,33 @@ export const POST: RequestHandler = async (event) => {
 		.from('crisis_draws')
 		.update({ chosen_option: body.option_key, applied_at: new Date().toISOString() })
 		.eq('id', draw.id);
+
+	const chosenPlayerName = body.chosen_player_id
+		? state.players.find((p) => p.id === body.chosen_player_id)?.display_name ?? null
+		: null;
+	const chosenCityName = body.chosen_city_key
+		? state.cities.find((c) => c.key === body.chosen_city_key)?.name ?? null
+		: null;
+	const reasonParts: string[] = [];
+	reasonParts.push(`${card.title} → ${option.label}`);
+	if (option.reason) reasonParts.push(option.reason);
+	const targetBits: string[] = [];
+	if (chosenPlayerName) targetBits.push(`hráč ${chosenPlayerName}`);
+	if (chosenCityName) targetBits.push(`město ${chosenCityName}`);
+	if (body.chosen_disease) targetBits.push(`nemoc ${body.chosen_disease}`);
+	if (targetBits.length > 0) reasonParts.push(`(${targetBits.join(', ')})`);
+	const reason = reasonParts.join(' · ');
+
 	await supabase.from('events_log').insert({
 		game_id: state.game.id,
 		kind: 'crisis_resolved',
-		payload: { draw_id: draw.id, option_key: body.option_key }
+		payload: {
+			draw_id: draw.id,
+			option_key: body.option_key,
+			card_title: card.title,
+			option_label: option.label,
+			reason
+		}
 	});
 
 	return json({ ok: true, events: result.events });

@@ -29,8 +29,17 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
 	import { Separator } from '$lib/components/ui/separator';
+	import {
+		Dialog,
+		DialogContent,
+		DialogDescription,
+		DialogFooter,
+		DialogHeader,
+		DialogTitle
+	} from '$lib/components/ui/dialog';
 	import MapCanvas from '$lib/components/game/MapCanvas.svelte';
 	import BrandMark from '$lib/components/game/BrandMark.svelte';
+	import { STATIONS, STATION_ORDER, type StationKey } from '$lib/stations';
 	import {
 		Copy,
 		Check,
@@ -42,7 +51,13 @@
 		QrCode,
 		Sparkles,
 		AlertTriangle,
-		KeyRound
+		KeyRound,
+		FlaskConical,
+		Brain,
+		Footprints,
+		Heart,
+		ListChecks,
+		ExternalLink
 	} from 'lucide-svelte';
 
 	type CrisisCardOption = { key: string; label: string; effects?: Record<string, unknown>[] };
@@ -103,6 +118,11 @@
 	let recoveryCopied = $state(false);
 	let busy = $state(false);
 	let errorMessage = $state<string | null>(null);
+
+	let crisisPickerOpen = $state(false);
+	let crisisLibrary = $state<CrisisCardRow[]>([]);
+	let crisisLibraryLoaded = $state(false);
+	let cityEditorOpen = $state(false);
 
 	const code = $derived((page.params.code ?? '').toUpperCase());
 
@@ -351,6 +371,65 @@
 	async function drawCrisis() {
 		await withBusy(async () => {
 			await gameApi.drawCrisis(code);
+		});
+	}
+
+	async function drawSpecificCrisis(cardId: string) {
+		await withBusy(async () => {
+			await gameApi.drawCrisis(code, cardId);
+		});
+		crisisPickerOpen = false;
+	}
+
+	async function loadCrisisLibrary() {
+		if (crisisLibraryLoaded) return;
+		const supabase = getBrowserSupabase();
+		const { data: rows, error: err } = await supabase
+			.from('crisis_cards')
+			.select('*')
+			.eq('is_active', true)
+			.order('title');
+		if (err) {
+			errorMessage = err.message;
+			return;
+		}
+		crisisLibrary = rows ?? [];
+		crisisLibraryLoaded = true;
+	}
+
+	async function openCrisisPicker() {
+		await loadCrisisLibrary();
+		crisisPickerOpen = true;
+	}
+
+	function stationUrl(key: StationKey): string {
+		const t = session?.device_token ?? '';
+		return `/station/${code}/${key}?token=${encodeURIComponent(t)}`;
+	}
+
+	function openStation(key: StationKey) {
+		if (!session) return;
+		window.open(stationUrl(key), '_blank', 'noopener,noreferrer');
+	}
+
+	const stationIcons: Record<StationKey, typeof FlaskConical> = {
+		lab: FlaskConical,
+		centrala: Brain,
+		sklad: Sparkles,
+		pole: Footprints,
+		karantena: Heart
+	};
+
+	function cityInfectionStage(c: GameCityRow, key: DiseaseKey): number {
+		const raw = c.infection_levels;
+		if (typeof raw !== 'object' || raw === null) return 0;
+		const v = (raw as Record<string, unknown>)[key];
+		return typeof v === 'number' ? Math.max(0, Math.min(3, Math.round(v))) : 0;
+	}
+
+	async function setCityInfection(cityKey: string, disease: DiseaseKey, stage: number) {
+		await withBusy(async () => {
+			await gameApi.setCityInfection(code, cityKey, disease, stage);
 		});
 	}
 
@@ -963,12 +1042,110 @@
 									<Sparkles class="size-4" />
 									Vylosovat krizi
 								</Button>
+								<Button
+									variant="outline"
+									onclick={openCrisisPicker}
+									disabled={busy || !!activeDraw}
+								>
+									<ListChecks class="size-4" />
+									Vybrat krizi ručně…
+								</Button>
 								<Button variant="outline" onclick={infectRandom} disabled={busy}>
 									<Shuffle class="size-4" />
 									+1 infekce náhodnému městu
 								</Button>
+								<Button
+									variant="outline"
+									onclick={() => {
+										cityEditorOpen = !cityEditorOpen;
+									}}
+									disabled={busy}
+								>
+									{cityEditorOpen ? 'Skrýt' : 'Ručně nastavit'} nákazu měst
+								</Button>
 							</CardContent>
 						</Card>
+
+						<!-- Stanice (tablety na fyzických místech) -->
+						<Card class="bg-card/40">
+							<CardHeader>
+								<CardTitle class="text-base">Stanice (tablety)</CardTitle>
+							</CardHeader>
+							<CardContent class="flex flex-col gap-2">
+								<p class="text-xs text-muted-foreground">
+									Otevři na tabletu / notebooku na fyzickém stanovišti. Token vedoucího je v URL.
+								</p>
+								<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+									{#each STATION_ORDER as key (key)}
+										{@const StationIco = stationIcons[key]}
+										<Button
+											variant="outline"
+											onclick={() => openStation(key)}
+											disabled={!session}
+											class="justify-start"
+											title={STATIONS[key].subtitle}
+										>
+											<StationIco class="size-4" />
+											{STATIONS[key].name}
+											<ExternalLink class="ml-auto size-3.5 opacity-60" />
+										</Button>
+									{/each}
+								</div>
+							</CardContent>
+						</Card>
+
+						{#if cityEditorOpen}
+							<Card class="bg-card/40">
+								<CardHeader>
+									<CardTitle class="text-base">Ručně nastavit nákazu měst</CardTitle>
+								</CardHeader>
+								<CardContent class="flex flex-col gap-2">
+									<p class="text-xs text-muted-foreground">
+										Kliknutím nastavíš stupeň 0–3 dané nemoci ve městě. Nespouští pandemii — je to čistá úprava stavu.
+									</p>
+									<div class="flex flex-col gap-1.5 max-h-96 overflow-y-auto pr-1">
+										{#each [...cities].sort((a, b) => a.name.localeCompare(b.name)) as c (c.id)}
+											<div
+												class="flex flex-wrap items-center gap-2 rounded-md border border-border/40 bg-background/40 px-2 py-1.5"
+											>
+												<span class="min-w-32 flex-1 truncate text-sm">
+													{c.name}{c.in_quarantine ? ' · karanténa' : ''}
+												</span>
+												{#each DISEASE_KEYS as k (k)}
+													{@const stage = cityInfectionStage(c, k)}
+													<label
+														class="flex items-center gap-1 rounded-md border border-border/40 bg-card/50 px-1.5 py-1"
+														title={`${diseaseLabels[k]} — stupeň`}
+													>
+														<span
+															class="size-2 rounded-full"
+															style={`background-color: var(--${k});`}
+															aria-hidden="true"
+														></span>
+														<select
+															class="h-6 bg-transparent text-[11px]"
+															value={String(stage)}
+															onchange={(e) =>
+																setCityInfection(
+																	c.map_city_key,
+																	k,
+																	Number((e.currentTarget as HTMLSelectElement).value)
+																)}
+															disabled={busy}
+														>
+															<option value="0">0</option>
+															<option value="1">1</option>
+															<option value="2">2</option>
+															<option value="3">3</option>
+														</select>
+													</label>
+												{/each}
+											</div>
+										{/each}
+									</div>
+								</CardContent>
+							</Card>
+						{/if}
 					{:else if game.status === 'paused'}
 						<Card class="bg-card/60">
 							<CardHeader>
@@ -1094,4 +1271,61 @@
 			</div>
 		{/if}
 	</div>
+
+	<Dialog bind:open={crisisPickerOpen}>
+		<DialogContent class="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+			<DialogHeader>
+				<DialogTitle>Vybrat krizovou kartu</DialogTitle>
+				<DialogDescription>
+					Vybraná karta se vylosuje ihned a tým může hlasovat. Pokud už nějaká karta běží, nejdřív ji vyhodnoť.
+				</DialogDescription>
+			</DialogHeader>
+
+			{#if crisisLibrary.length === 0}
+				<p class="text-sm text-muted-foreground">
+					{crisisLibraryLoaded ? 'Žádné aktivní karty nejsou.' : 'Načítám…'}
+				</p>
+			{:else}
+				<ul class="flex flex-col gap-2">
+					{#each crisisLibrary as card (card.id)}
+						{@const options = (Array.isArray(card.options) ? card.options : []) as CrisisCardOption[]}
+						<li class="rounded-lg border border-border/40 bg-card/40 p-3">
+							<div class="flex flex-wrap items-start justify-between gap-2">
+								<div class="flex min-w-0 flex-1 flex-col gap-1">
+									<span class="text-sm font-semibold">{card.title}</span>
+									<p class="text-xs text-muted-foreground">{card.body}</p>
+									<ul class="mt-1 flex flex-wrap gap-1 text-[11px]">
+										{#each options as opt (opt.key)}
+											<li class="rounded-md border border-border/40 bg-background/40 px-2 py-0.5">
+												{opt.label}
+											</li>
+										{/each}
+									</ul>
+								</div>
+								<Button
+									variant="default"
+									size="sm"
+									onclick={() => drawSpecificCrisis(card.id)}
+									disabled={busy || !!activeDraw}
+								>
+									Vylosovat
+								</Button>
+							</div>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			<DialogFooter>
+				<Button
+					variant="ghost"
+					onclick={() => {
+						crisisPickerOpen = false;
+					}}
+				>
+					Zavřít
+				</Button>
+			</DialogFooter>
+		</DialogContent>
+	</Dialog>
 </div>

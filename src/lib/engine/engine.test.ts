@@ -212,6 +212,40 @@ describe('applyInfection', () => {
 		const r = applyInfection(s, 'a', 'rubra', seededRng(1));
 		expect(r.state.cities.find((c) => c.key === 'a')?.infection_levels.rubra).toBe(0);
 	});
+
+	it('skips infection on merely cured (not yet eradicated) diseases', () => {
+		let s = freshState();
+		s = {
+			...s,
+			diseases: s.diseases.map((d) =>
+				d.key === 'rubra' ? { ...d, cured: true, cure_stage: 4 } : d
+			),
+			// pre-seed a leftover infection so the cure isn't auto-eradicated
+			cities: s.cities.map((c) =>
+				c.key === 'b' ? { ...c, infection_levels: { ...c.infection_levels, rubra: 1 } } : c
+			)
+		};
+		const r = applyInfection(s, 'a', 'rubra', seededRng(1));
+		expect(r.state.cities.find((c) => c.key === 'a')?.infection_levels.rubra).toBe(0);
+		expect(r.events).toHaveLength(0);
+	});
+
+	it('cured disease does not spread via pandemic chain either', () => {
+		let s = freshState();
+		s = {
+			...s,
+			diseases: s.diseases.map((d) =>
+				d.key === 'rubra' ? { ...d, cured: true, cure_stage: 4 } : d
+			),
+			cities: s.cities.map((c) =>
+				c.key === 'a' ? { ...c, infection_levels: { rubra: 3, viridis: 0, nox: 0, aurum: 0 } } : c
+			)
+		};
+		const r = applyInfection(s, 'a', 'rubra', seededRng(1));
+		// no pandemic, no neighbor spread
+		expect(r.state.game.pandemic_count).toBe(0);
+		expect(r.state.cities.find((c) => c.key === 'b')?.infection_levels.rubra).toBe(0);
+	});
 });
 
 describe('infectionStep', () => {
@@ -228,6 +262,77 @@ describe('infectionStep', () => {
 			if (e.kind !== 'infection') continue;
 			const city = r.state.cities.find((c) => c.key === e.city_key);
 			expect(city?.color).toBe(e.disease);
+		}
+	});
+
+	it('does not pick cities whose regional disease has been cured', () => {
+		let s = freshState();
+		s = {
+			...s,
+			diseases: s.diseases.map((d) =>
+				d.key === 'rubra' ? { ...d, cured: true, cure_stage: 4 } : d
+			)
+		};
+		const r = infectionStep(s, { count: 3, rng: seededRng(99) });
+		const infectionEvents = r.events.filter((e) => e.kind === 'infection');
+		for (const e of infectionEvents) {
+			if (e.kind === 'infection') expect(e.disease).not.toBe('rubra');
+		}
+	});
+
+	it('emits player_infect events occasionally during spread', () => {
+		const players = Array.from({ length: 6 }, (_, i) => ({
+			id: `p${i}`,
+			display_name: `P${i}`,
+			role: null,
+			is_admin: false,
+			slot_index: i,
+			infection_levels: { rubra: 0, viridis: 0, nox: 0, aurum: 0 },
+			current_city_key: null,
+			carry_limit: 1
+		}));
+		const s: GameState = {
+			...freshState({
+				settings: { ...DEFAULT_SETTINGS, player_infect_chance_during_spread: 1 }
+			}),
+			players
+		};
+		const r = infectionStep(s, { count: 3, rng: seededRng(1) });
+		const pInfects = r.events.filter((e) => e.kind === 'player_infect');
+		// chance=1 + 6 players × 3 picks = up to 18 player infections (capped per
+		// player at stage 3). At least some must fire.
+		expect(pInfects.length).toBeGreaterThan(0);
+	});
+
+	it('never infects players with a cured disease during spread', () => {
+		const players = [
+			{
+				id: 'p1',
+				display_name: 'P1',
+				role: null,
+				is_admin: false,
+				slot_index: 0,
+				infection_levels: { rubra: 0, viridis: 0, nox: 0, aurum: 0 },
+				current_city_key: null,
+				carry_limit: 1
+			}
+		];
+		let s: GameState = {
+			...freshState({
+				settings: { ...DEFAULT_SETTINGS, player_infect_chance_during_spread: 1 }
+			}),
+			players
+		};
+		// cure rubra and keep an infection of viridis active so the step still has
+		// targets to draw from
+		s = {
+			...s,
+			diseases: s.diseases.map((d) => (d.key === 'rubra' ? { ...d, cured: true, cure_stage: 4 } : d))
+		};
+		const r = infectionStep(s, { count: 3, rng: seededRng(2) });
+		const pInfects = r.events.filter((e) => e.kind === 'player_infect');
+		for (const e of pInfects) {
+			if (e.kind === 'player_infect') expect(e.disease).not.toBe('rubra');
 		}
 	});
 });

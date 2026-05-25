@@ -76,6 +76,9 @@ export const DEFAULT_SETTINGS = {
 	infection_spread_per_round: 3,
 	epidemic_every_n: 3,
 	cure_cost: 4,
+	// Per-player chance to also catch the spreading disease in each city during
+	// Šíření. ~0.18 keeps movement rules occasionally in play without ramping.
+	player_infect_chance_during_spread: 0.18,
 	win_condition: 'lenient' as 'strict' | 'lenient'
 };
 

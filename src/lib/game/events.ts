@@ -102,8 +102,37 @@ export function formatEvent(kind: string, payload: Json, ctx: FormatCtx = {}): s
 		}
 		case 'crisis_drawn':
 			return 'Vylosována krizová karta';
-		case 'crisis_resolved':
-			return 'Krize vyřešena';
+		case 'crisis_resolved': {
+			const reason = typeof p.reason === 'string' ? p.reason : '';
+			return reason ? `Krize vyřešena — ${reason}` : 'Krize vyřešena';
+		}
+		case 'manual_set_infection': {
+			const stage = typeof p.new_stage === 'number' ? p.new_stage : '?';
+			const city = typeof p.city_name === 'string' ? p.city_name : cityLabel(p.city_key, ctx);
+			return `Ruční úprava nákazy: ${city} (${diseaseLabel(p.disease, theme)}, stupeň ${stage})`;
+		}
+		case 'station_complete': {
+			const label = typeof p.task_label === 'string' && p.task_label.length > 0 ? p.task_label : null;
+			const station = typeof p.station === 'string' ? p.station : '';
+			const stationNames: Record<string, string> = {
+				lab: 'Laboratoř',
+				centrala: 'Centrála',
+				sklad: 'Sklad',
+				pole: 'Pole',
+				karantena: 'Karanténní stanice'
+			};
+			const stName = stationNames[station] ?? station;
+			if (station === 'karantena') {
+				const stage = typeof p.new_stage === 'number' ? p.new_stage : '?';
+				return label
+					? `${stName} — ${playerLabel(p.player_id, p, ctx)} splnil „${label}" → ${diseaseLabel(p.disease, theme)} stupeň ${stage}`
+					: `${stName} — ${playerLabel(p.player_id, p, ctx)} se vyléčil o stupeň (${diseaseLabel(p.disease, theme)})`;
+			}
+			const stage = typeof p.new_stage === 'number' ? p.new_stage : '?';
+			return label
+				? `${stName} — splněno „${label}" → ${diseaseLabel(p.disease, theme)} ${stage}/4`
+				: `${stName} — splněn úkol → ${diseaseLabel(p.disease, theme)} ${stage}/4`;
+		}
 		case 'crisis_vote': {
 			const opt = typeof p.option_key === 'string' ? p.option_key : '?';
 			return `${playerLabel(p.player_id, p, ctx)} hlasuje pro: ${opt}`;

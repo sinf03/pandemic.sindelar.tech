@@ -99,7 +99,10 @@ export function applyInfection(
 	if (!city || city.removed) return { state: s, events };
 
 	const disease_state = s.diseases.find((d) => d.key === disease);
-	if (disease_state?.eradicated) return { state: s, events };
+	// Cured/eradicated diseases stop spreading entirely (RULES.md: "Lék hotov:
+	// nemoc se přestane dál šířit"). This applies to natural spread, pandemic
+	// chains and crisis-driven infection alike.
+	if (disease_state?.cured || disease_state?.eradicated) return { state: s, events };
 
 	if (city.in_quarantine) {
 		return { state: s, events }; // quarantine blocks infection
@@ -140,13 +143,21 @@ export function applyInfection(
 
 /**
  * Standard turn-end infection step: draw N cities and infect each with its own
- * color-matching disease.
+ * color-matching disease. Skips cities whose regional disease is already cured —
+ * a cured disease does not spread, so we'd just waste the draw.
+ *
+ * Side-effect: each non-admin player has a small chance to also catch the
+ * disease that just hit a city this step (RULES require players to occasionally
+ * pick up infection during Šíření, not only via crises).
  */
 export function infectionStep(
 	state: GameState,
 	options: { count: number; rng: Rng }
 ): EngineResult {
-	const eligible = state.cities.filter((c) => !c.removed && !c.in_quarantine);
+	const curedSet = new Set(state.diseases.filter((d) => d.cured).map((d) => d.key));
+	const eligible = state.cities.filter(
+		(c) => !c.removed && !c.in_quarantine && !curedSet.has(c.color)
+	);
 	const picks = sample(eligible, options.count, options.rng);
 	let s = state;
 	const events: EngineEvent[] = [];
@@ -154,8 +165,40 @@ export function infectionStep(
 		const r = applyInfection(s, city.key, city.color, options.rng);
 		s = r.state;
 		events.push(...r.events);
+		const playerEvents = rollPlayerInfectionDuringSpread(s, city.color, options.rng);
+		for (const pe of playerEvents) {
+			const upd = infectPlayer(s, pe.player_id, city.color, 1);
+			s = upd.state;
+			events.push(...upd.events);
+		}
 	}
 	return { state: s, events };
+}
+
+/**
+ * Per-player probability of catching the disease that's actively spreading this
+ * step. ~18% per non-admin player per affected city — at typical settings (3
+ * picks/round, ~6 players) that produces ~1 player infection every other
+ * spread phase, which keeps movement rules in play without snowballing.
+ *
+ * Returns just the list of (player_id) to infect; the caller applies them
+ * sequentially so each `infectPlayer` call sees the latest state.
+ */
+function rollPlayerInfectionDuringSpread(
+	state: GameState,
+	disease: DiseaseKey,
+	rng: Rng
+): Array<{ player_id: string }> {
+	const diseaseState = state.diseases.find((d) => d.key === disease);
+	if (diseaseState?.cured || diseaseState?.eradicated) return [];
+	const chance = state.game.settings.player_infect_chance_during_spread ?? 0.18;
+	const out: Array<{ player_id: string }> = [];
+	for (const p of state.players) {
+		if (p.is_admin) continue;
+		if ((p.infection_levels[disease] ?? 0) >= 3) continue;
+		if (rng() < chance) out.push({ player_id: p.id });
+	}
+	return out;
 }
 
 /**
@@ -165,7 +208,10 @@ export function infectionStep(
  * then a single infectionStep on top.
  */
 export function epidemic(state: GameState, rng: Rng): EngineResult {
-	const eligible = state.cities.filter((c) => !c.removed && !c.in_quarantine);
+	const curedSet = new Set(state.diseases.filter((d) => d.cured).map((d) => d.key));
+	const eligible = state.cities.filter(
+		(c) => !c.removed && !c.in_quarantine && !curedSet.has(c.color)
+	);
 	if (eligible.length === 0) return { state, events: [] };
 	const target = pick(eligible, rng);
 	let s = state;
