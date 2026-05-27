@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { LogIn, Plus, ArrowRight } from 'lucide-svelte';
+	import { LogIn, Plus, ArrowRight, BookOpen } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import { listSessions, type PlayerSession } from '$lib/session';
@@ -90,6 +90,17 @@
 					</div>
 				</CardContent>
 			</Card>
+		</section>
+
+		<section class="flex justify-center md:justify-start">
+			<a
+				href="/rules"
+				class="inline-flex items-center gap-2 rounded-lg border border-border bg-card/40 px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+			>
+				<BookOpen class="size-4" />
+				Pravidla hry
+				<ArrowRight class="size-3.5" />
+			</a>
 		</section>
 
 		{#if sessions.length > 0}
